@@ -1,0 +1,5 @@
+    [Environment: Windows]
+    - Always use 'cmd /c' for terminal commands to ensure the process terminates correctly.
+    - Avoid interactive prompts; always use non-interactive flags (e.g., -y, --force).
+    - If reading files, prefer 'type' or 'more' via cmd instead of PowerShell's Get-Content.
+    ``
