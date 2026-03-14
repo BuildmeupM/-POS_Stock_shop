@@ -70,7 +70,7 @@ function ProductsTab() {
   const [selectedProduct, setSelectedProduct] = useState<any>(null)
   const emptyForm = { sku: '', barcode: '', name: '', description: '', categoryId: '', unit: 'ชิ้น', costPrice: 0, sellingPrice: 0, minStock: 0 }
   const [form, setForm] = useState(emptyForm)
-  const [receiveForm, setReceiveForm] = useState({ quantity: 0, costPerUnit: 0, note: '' })
+  const [receiveForm, setReceiveForm] = useState({ quantity: 0, costPerUnit: 0, sellingPrice: 0, note: '' })
   const queryClient = useQueryClient()
 
   const { data: products, isLoading } = useQuery({
@@ -123,7 +123,7 @@ function ProductsTab() {
     mutationFn: (data: any) => api.post('/inventory/receive', data),
     onSuccess: () => {
       notifications.show({ title: 'สำเร็จ', message: 'รับสินค้าเข้าสต๊อกสำเร็จ', color: 'green' })
-      setReceiveModal(false); setReceiveForm({ quantity: 0, costPerUnit: 0, note: '' }); setSelectedProduct(null)
+      setReceiveModal(false); setReceiveForm({ quantity: 0, costPerUnit: 0, sellingPrice: 0, note: '' }); setSelectedProduct(null)
       queryClient.invalidateQueries({ queryKey: ['products'] })
     },
     onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับเข้าได้', color: 'red' }),
@@ -307,7 +307,7 @@ function ProductsTab() {
                       <Group gap={4} justify="center">
                         <Tooltip label="รับเข้าสต๊อก">
                           <ActionIcon size="sm" variant="light" color="green"
-                            onClick={() => { setSelectedProduct(p); setReceiveForm({ quantity: 0, costPerUnit: cost, note: '' }); setReceiveModal(true) }}>
+                            onClick={() => { setSelectedProduct(p); setReceiveForm({ quantity: 0, costPerUnit: cost, sellingPrice: sell, note: '' }); setReceiveModal(true) }}>
                             <IconPackageImport size={14} />
                           </ActionIcon>
                         </Tooltip>
@@ -351,12 +351,50 @@ function ProductsTab() {
         <Stack gap="md">
           <Select label="คลังสินค้า" data={(warehouses || []).map((w: any) => ({ value: String(w.id), label: w.name }))}
             defaultValue={warehouses?.[0]?.id ? String(warehouses[0].id) : undefined} />
+          <NumberInput label="จำนวน" required min={1} value={receiveForm.quantity}
+            onChange={(v) => setReceiveForm({ ...receiveForm, quantity: Number(v) })} />
           <Group grow>
-            <NumberInput label="จำนวน" required min={1} value={receiveForm.quantity}
-              onChange={(v) => setReceiveForm({ ...receiveForm, quantity: Number(v) })} />
             <NumberInput label="ราคาทุนต่อหน่วย" required min={0} decimalScale={2} value={receiveForm.costPerUnit}
               onChange={(v) => setReceiveForm({ ...receiveForm, costPerUnit: Number(v) })} />
+            <NumberInput label="ราคาขาย" required min={0} decimalScale={2} value={receiveForm.sellingPrice}
+              onChange={(v) => setReceiveForm({ ...receiveForm, sellingPrice: Number(v) })} />
           </Group>
+          {/* Real-time Margin Calculation */}
+          {(() => {
+            const cost = receiveForm.costPerUnit || 0
+            const sell = receiveForm.sellingPrice || 0
+            const profit = sell - cost
+            const margin = sell > 0 ? (profit / sell * 100) : 0
+            const marginColor = margin >= 30 ? '#059669' : margin >= 15 ? '#d97706' : '#dc2626'
+            const marginBg = margin >= 30 ? 'rgba(5,150,105,0.08)' : margin >= 15 ? 'rgba(217,119,6,0.08)' : 'rgba(220,38,38,0.08)'
+            return (
+              <div style={{
+                background: marginBg, borderRadius: 10, padding: '12px 16px',
+                border: `1px solid ${marginColor}22`, display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+              }}>
+                <div>
+                  <Text size="xs" c="dimmed" mb={2}>กำไรต่อหน่วย</Text>
+                  <Text size="lg" fw={700} c={profit >= 0 ? 'green' : 'red'}>
+                    ฿{fmt(profit)}
+                  </Text>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <Text size="xs" c="dimmed" mb={2}>Margin</Text>
+                  <Badge size="lg" variant="light"
+                    color={margin >= 30 ? 'green' : margin >= 15 ? 'yellow' : 'red'}
+                    style={{ fontSize: 16, fontWeight: 700 }}>
+                    {margin.toFixed(1)}%
+                  </Badge>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <Text size="xs" c="dimmed" mb={2}>มูลค่ารวม (ทุน)</Text>
+                  <Text size="sm" fw={600}>
+                    ฿{fmt(cost * (receiveForm.quantity || 0))}
+                  </Text>
+                </div>
+              </div>
+            )
+          })()}
           <TextInput label="หมายเหตุ" value={receiveForm.note}
             onChange={(e) => setReceiveForm({ ...receiveForm, note: e.target.value })} />
           <Button fullWidth loading={receiveMutation.isPending} color="green"

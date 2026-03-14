@@ -48,7 +48,7 @@ router.post('/receive', async (req, res) => {
   try {
     await connection.beginTransaction()
 
-    const { productId, warehouseId, quantity, costPerUnit, batchNumber, expiryDate, note } = req.body
+    const { productId, warehouseId, quantity, costPerUnit, sellingPrice, batchNumber, expiryDate, note } = req.body
 
     if (!productId || !warehouseId || !quantity || !costPerUnit) {
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบ' })
@@ -68,7 +68,7 @@ router.post('/receive', async (req, res) => {
       [productId, warehouseId, quantity, costPerUnit, lotResult.insertId, note || null, req.user.id]
     )
 
-    // Update product average cost
+    // Update product average cost + selling price
     const [lots] = await connection.execute(
       `SELECT SUM(quantity_remaining * cost_per_unit) as total_value, SUM(quantity_remaining) as total_qty
        FROM stock_lots WHERE product_id = ? AND quantity_remaining > 0`,
@@ -76,7 +76,11 @@ router.post('/receive', async (req, res) => {
     )
     if (lots[0].total_qty > 0) {
       const avgCost = lots[0].total_value / lots[0].total_qty
-      await connection.execute('UPDATE products SET cost_price = ? WHERE id = ?', [avgCost, productId])
+      if (sellingPrice && sellingPrice > 0) {
+        await connection.execute('UPDATE products SET cost_price = ?, selling_price = ? WHERE id = ?', [avgCost, sellingPrice, productId])
+      } else {
+        await connection.execute('UPDATE products SET cost_price = ? WHERE id = ?', [avgCost, productId])
+      }
     }
 
     await connection.commit()

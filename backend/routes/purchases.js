@@ -47,7 +47,14 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const pos = await executeQuery(
-      `SELECT po.*, c.name as contact_name
+      `SELECT po.*, c.name as contact_name, c.phone as contact_phone,
+         c.email as contact_email, c.address as contact_address,
+         c.tax_id as contact_tax_id, c.branch as contact_branch,
+         c.address_street as contact_address_street,
+         c.address_subdistrict as contact_address_subdistrict,
+         c.address_district as contact_address_district,
+         c.address_province as contact_address_province,
+         c.address_postal_code as contact_address_postal_code
        FROM purchase_orders po
        LEFT JOIN contacts c ON po.contact_id = c.id
        WHERE po.id = ? AND po.company_id = ?`,

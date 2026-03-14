@@ -7,7 +7,8 @@ import POSPage from './pages/POSPage'
 import StockPage from './pages/StockPage'
 import ExpensePage from './pages/ExpensePage'
 import ExpenseCreatePage from './pages/ExpenseCreatePage'
-import ContactsPage from './pages/ContactsPage'
+import CustomersPage from './pages/CustomersPage'
+import SuppliersContactPage from './pages/SuppliersContactPage'
 import OrdersPage from './pages/OrdersPage'
 import OrderCreatePage from './pages/OrderCreatePage'
 import OrderDetailPage from './pages/OrderDetailPage'
@@ -41,7 +42,9 @@ export default function App() {
         <Route path="purchases/:id" element={<PurchaseDetailPage />} />
         <Route path="expenses/create" element={<ExpenseCreatePage />} />
         <Route path="expenses" element={<ExpensePage />} />
-        <Route path="contacts" element={<ContactsPage />} />
+        <Route path="customers" element={<CustomersPage />} />
+        <Route path="suppliers-contacts" element={<SuppliersContactPage />} />
+        <Route path="contacts" element={<Navigate to="/customers" replace />} />
         <Route path="orders/create" element={<OrderCreatePage />} />
         <Route path="orders/:id" element={<OrderDetailPage />} />
         <Route path="orders" element={<OrdersPage />} />

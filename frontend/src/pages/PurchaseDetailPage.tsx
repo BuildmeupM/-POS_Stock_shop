@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Table, Button, TextInput, Group, Modal, Stack, NumberInput, Select,
@@ -66,6 +66,15 @@ export default function PurchaseDetailPage() {
     queryKey: ['products-for-po'],
     queryFn: () => api.get('/products').then(r => r.data),
   })
+
+  const { data: companyInfo } = useQuery({
+    queryKey: ['company-current'],
+    queryFn: () => api.get('/companies/current').then(r => r.data),
+  })
+
+  // --- Print ---
+  const [printDocType, setPrintDocType] = useState<'po' | 'invoice' | 'receipt' | null>(null)
+  const [printDocData, setPrintDocData] = useState<any>(null)
 
   // --- Edit Mode ---
   const [editMode, setEditMode] = useState(false)
@@ -255,6 +264,13 @@ export default function PurchaseDetailPage() {
           </div>
         </Group>
         <Group>
+          {/* Print button */}
+          {!editMode && (
+            <Button variant="light" color="violet" leftSection={<IconPrinter size={16} />}
+              onClick={() => { setPrintDocType('po'); setPrintDocData(null) }}>
+              พิมพ์เอกสาร
+            </Button>
+          )}
           {/* Edit / Delete buttons (draft or approved only) */}
           {isEditable && !editMode && (
             <>
@@ -552,17 +568,25 @@ export default function PurchaseDetailPage() {
                         </Text>
                       </div>
                     </Group>
-                    <div style={{ textAlign: 'right' }}>
-                      <Text size="sm" fw={700}>฿{fmt(parseFloat(inv.total_amount))}</Text>
-                      {remaining > 0 && inv.status !== 'paid' && (
-                        <Text size="xs" c="orange">ค้าง ฿{fmt(remaining)}</Text>
-                      )}
-                      {inv.due_date && (
-                        <Text size="xs" c={new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 'red' : 'dimmed'}>
-                          ครบกำหนด {fmtDate(inv.due_date)}
-                        </Text>
-                      )}
-                    </div>
+                    <Group gap="sm">
+                      <div style={{ textAlign: 'right' }}>
+                        <Text size="sm" fw={700}>฿{fmt(parseFloat(inv.total_amount))}</Text>
+                        {remaining > 0 && inv.status !== 'paid' && (
+                          <Text size="xs" c="orange">ค้าง ฿{fmt(remaining)}</Text>
+                        )}
+                        {inv.due_date && (
+                          <Text size="xs" c={new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 'red' : 'dimmed'}>
+                            ครบกำหนด {fmtDate(inv.due_date)}
+                          </Text>
+                        )}
+                      </div>
+                      <Tooltip label="พิมพ์ใบแจ้งหนี้">
+                        <ActionIcon variant="light" color="violet" size="sm"
+                          onClick={() => { setPrintDocType('invoice'); setPrintDocData(inv) }}>
+                          <IconPrinter size={14} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   </Group>
                 </Paper>
               )
@@ -582,10 +606,18 @@ export default function PurchaseDetailPage() {
                       </Text>
                     </div>
                   </Group>
-                  <div style={{ textAlign: 'right' }}>
-                    <Text size="sm" fw={700} c="green">฿{fmt(parseFloat(p.amount))}</Text>
-                    <Text size="xs" c="dimmed">{fmtDateFull(p.payment_date)}</Text>
-                  </div>
+                  <Group gap="sm">
+                    <div style={{ textAlign: 'right' }}>
+                      <Text size="sm" fw={700} c="green">฿{fmt(parseFloat(p.amount))}</Text>
+                      <Text size="xs" c="dimmed">{fmtDateFull(p.payment_date)}</Text>
+                    </div>
+                    <Tooltip label="พิมพ์ใบเสร็จรับเงิน">
+                      <ActionIcon variant="light" color="green" size="sm"
+                        onClick={() => { setPrintDocType('receipt'); setPrintDocData(p) }}>
+                        <IconPrinter size={14} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Group>
                 </Group>
               </Paper>
             ))}
@@ -739,6 +771,17 @@ export default function PurchaseDetailPage() {
           )}
         </Stack>
       </Modal>
+
+      {/* ===== PRINT MODAL ===== */}
+      <PrintDocumentModal
+        opened={!!printDocType}
+        onClose={() => { setPrintDocType(null); setPrintDocData(null) }}
+        docType={printDocType || 'po'}
+        poDetail={poDetail}
+        docData={printDocData}
+        companyInfo={companyInfo}
+        timeline={timeline}
+      />
     </Stack>
   )
 }
@@ -820,3 +863,307 @@ function DocumentStepper({ status, onStepClick }: { status: string; onStepClick?
     </div>
   )
 }
+
+/* ====================================================================
+   PRINT DOCUMENT MODAL — supports PO, Invoice, Receipt
+   ==================================================================== */
+type DocType = 'po' | 'invoice' | 'receipt'
+
+const DOC_CONFIGS: Record<DocType, { title: string; icon: string; color: string; borderColor: string }> = {
+  po: { title: 'ใบสั่งซื้อ', icon: '📋', color: '#4f46e5', borderColor: '#4f46e5' },
+  invoice: { title: 'ใบแจ้งหนี้', icon: '📄', color: '#7c3aed', borderColor: '#7c3aed' },
+  receipt: { title: 'ใบเสร็จรับเงิน', icon: '🧾', color: '#059669', borderColor: '#059669' },
+}
+
+function PrintDocumentModal({ opened, onClose, docType, poDetail, docData, companyInfo, timeline }: {
+  opened: boolean
+  onClose: () => void
+  docType: DocType
+  poDetail: any
+  docData: any
+  companyInfo: any
+  timeline: any
+}) {
+  const printRef = useRef<HTMLDivElement>(null)
+  const handlePrint = () => window.print()
+
+  if (!poDetail) return null
+
+  const cfg = DOC_CONFIGS[docType]
+
+  // Build vendor address string
+  const vendorAddress = [
+    poDetail.contact_address,
+    poDetail.contact_address_street,
+    poDetail.contact_address_subdistrict ? `ต.${poDetail.contact_address_subdistrict}` : '',
+    poDetail.contact_address_district ? `อ.${poDetail.contact_address_district}` : '',
+    poDetail.contact_address_province ? `จ.${poDetail.contact_address_province}` : '',
+    poDetail.contact_address_postal_code,
+  ].filter(Boolean).join(' ')
+
+  // Resolve financial data based on docType
+  const inv = docType === 'invoice' ? docData : null
+  const pay = docType === 'receipt' ? docData : null
+  // For receipt, find the related invoice
+  const payInvoice = pay ? timeline?.invoices?.find((i: any) => String(i.id) === String(pay.invoice_id)) : null
+
+  const getDocNumber = () => {
+    if (docType === 'po') return poDetail.po_number
+    if (docType === 'invoice') return inv?.invoice_number || ''
+    return pay?.payment_number || ''
+  }
+
+  const getStatusInfo = () => {
+    if (docType === 'po') {
+      const st = PO_STATUSES[poDetail.status] || PO_STATUSES.draft
+      const colors: Record<string, { bg: string; color: string }> = {
+        draft: { bg: '#f1f5f9', color: '#64748b' },
+        approved: { bg: '#dbeafe', color: '#2563eb' },
+        partial: { bg: '#ffedd5', color: '#ea580c' },
+        received: { bg: '#d1fae5', color: '#059669' },
+        invoiced: { bg: '#ede9fe', color: '#7c3aed' },
+        paid: { bg: '#d1fae5', color: '#059669' },
+        cancelled: { bg: '#fee2e2', color: '#dc2626' },
+      }
+      return { label: st.label, ...colors[poDetail.status] || colors.draft }
+    }
+    if (docType === 'invoice') {
+      const st = INV_STATUSES[inv?.status] || INV_STATUSES.pending
+      const colors: Record<string, { bg: string; color: string }> = {
+        pending: { bg: '#ffedd5', color: '#ea580c' },
+        partial: { bg: '#dbeafe', color: '#2563eb' },
+        paid: { bg: '#d1fae5', color: '#059669' },
+      }
+      return { label: st.label, ...colors[inv?.status] || colors.pending }
+    }
+    return { label: 'ชำระแล้ว', bg: '#d1fae5', color: '#059669' }
+  }
+
+  const status = getStatusInfo()
+
+  return (
+    <Modal opened={opened} onClose={onClose} size="xl"
+      title={`${cfg.icon} พิมพ์${cfg.title}`}
+      styles={{ body: { padding: 0 } }}>
+      <div style={{ padding: '12px 20px 16px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button variant="light" onClick={onClose}>ปิด</Button>
+        <Button color="violet" leftSection={<IconPrinter size={16} />} onClick={handlePrint}>
+          พิมพ์
+        </Button>
+      </div>
+
+      <div style={{ padding: '20px', maxHeight: 'calc(90vh - 120px)', overflow: 'auto' }}>
+        <div className="print-area" ref={printRef}>
+          {/* ===== Header ===== */}
+          <div className="print-header" style={{ borderBottomColor: cfg.color }}>
+            <div className="print-company-info">
+              <h1 style={{ color: cfg.color }}>{companyInfo?.name || 'บริษัท'}</h1>
+              {companyInfo?.address && <p>📍 {companyInfo.address}</p>}
+              {companyInfo?.phone && <p>📞 {companyInfo.phone}</p>}
+              {companyInfo?.tax_id && <p>เลขประจำตัวผู้เสียภาษี: {companyInfo.tax_id}</p>}
+            </div>
+            <div className="print-doc-title">
+              <h2>{cfg.title}</h2>
+              <div className="print-doc-number" style={{ color: cfg.color }}>{getDocNumber()}</div>
+              <div className="print-doc-status" style={{ background: status.bg, color: status.color }}>
+                {status.label}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== Info Grid — varies by doc type ===== */}
+          <div className="print-info-grid">
+            {docType === 'po' && (
+              <>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ข้อมูลเอกสาร</h3>
+                  <p><span className="print-info-label">เลขที่ PO:</span> {poDetail.po_number}</p>
+                  <p><span className="print-info-label">วันที่สั่งซื้อ:</span> {fmtDateFull(poDetail.order_date)}</p>
+                  <p><span className="print-info-label">กำหนดรับสินค้า:</span> {fmtDateFull(poDetail.expected_date)}</p>
+                </div>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ผู้ขาย / Vendor</h3>
+                  <p style={{ fontWeight: 700 }}>{poDetail.contact_name}</p>
+                  {vendorAddress && <p>{vendorAddress}</p>}
+                  {poDetail.contact_phone && <p>📞 {poDetail.contact_phone}</p>}
+                  {poDetail.contact_email && <p>✉️ {poDetail.contact_email}</p>}
+                  {poDetail.contact_tax_id && (
+                    <p><span className="print-info-label">Tax ID:</span> {poDetail.contact_tax_id}
+                      {poDetail.contact_branch ? ` (${poDetail.contact_branch})` : ''}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {docType === 'invoice' && inv && (
+              <>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ข้อมูลใบแจ้งหนี้</h3>
+                  <p><span className="print-info-label">เลขที่ Invoice:</span> {inv.invoice_number}</p>
+                  {inv.tax_invoice_number && <p><span className="print-info-label">เลขใบกำกับภาษี:</span> {inv.tax_invoice_number}</p>}
+                  <p><span className="print-info-label">วันที่ออก:</span> {fmtDateFull(inv.invoice_date)}</p>
+                  {inv.due_date && <p><span className="print-info-label">ครบกำหนดชำระ:</span> {fmtDateFull(inv.due_date)}</p>}
+                  <p><span className="print-info-label">อ้างอิง PO:</span> {poDetail.po_number}</p>
+                </div>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ผู้ขาย / Vendor</h3>
+                  <p style={{ fontWeight: 700 }}>{poDetail.contact_name}</p>
+                  {vendorAddress && <p>{vendorAddress}</p>}
+                  {poDetail.contact_phone && <p>📞 {poDetail.contact_phone}</p>}
+                  {poDetail.contact_tax_id && (
+                    <p><span className="print-info-label">Tax ID:</span> {poDetail.contact_tax_id}
+                      {poDetail.contact_branch ? ` (${poDetail.contact_branch})` : ''}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {docType === 'receipt' && pay && (
+              <>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ข้อมูลการชำระเงิน</h3>
+                  <p><span className="print-info-label">เลขที่ใบเสร็จ:</span> {pay.payment_number}</p>
+                  <p><span className="print-info-label">วันที่ชำระ:</span> {fmtDateFull(pay.payment_date)}</p>
+                  <p><span className="print-info-label">วิธีชำระ:</span> {pay.payment_method === 'transfer' ? 'โอนเงิน' : pay.payment_method === 'cash' ? 'เงินสด' : 'เช็ค'}</p>
+                  {pay.reference_number && <p><span className="print-info-label">เลขอ้างอิง:</span> {pay.reference_number}</p>}
+                  {pay.bank_name && <p><span className="print-info-label">ธนาคาร:</span> {pay.bank_name}</p>}
+                  <p><span className="print-info-label">อ้างอิง PO:</span> {poDetail.po_number}</p>
+                  {payInvoice && <p><span className="print-info-label">อ้างอิง Invoice:</span> {payInvoice.invoice_number}</p>}
+                </div>
+                <div className="print-info-box">
+                  <h3 style={{ color: cfg.color }}>ผู้รับเงิน / Vendor</h3>
+                  <p style={{ fontWeight: 700 }}>{poDetail.contact_name}</p>
+                  {vendorAddress && <p>{vendorAddress}</p>}
+                  {poDetail.contact_phone && <p>📞 {poDetail.contact_phone}</p>}
+                  {poDetail.contact_tax_id && (
+                    <p><span className="print-info-label">Tax ID:</span> {poDetail.contact_tax_id}
+                      {poDetail.contact_branch ? ` (${poDetail.contact_branch})` : ''}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ===== Items Table — PO & Invoice ===== */}
+          {(docType === 'po' || docType === 'invoice') && (
+            <table className="print-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 40, textAlign: 'center' }}>#</th>
+                  <th style={{ width: 100 }}>SKU</th>
+                  <th>รายการสินค้า</th>
+                  <th style={{ width: 50, textAlign: 'center' }}>หน่วย</th>
+                  <th style={{ width: 60, textAlign: 'center' }}>จำนวน</th>
+                  <th style={{ width: 100, textAlign: 'right' }}>ราคา/หน่วย</th>
+                  <th style={{ width: 110, textAlign: 'right' }}>จำนวนเงิน</th>
+                </tr>
+              </thead>
+              <tbody>
+                {poDetail.items?.map((item: any, idx: number) => (
+                  <tr key={item.id}>
+                    <td style={{ textAlign: 'center' }}>{idx + 1}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{item.sku}</td>
+                    <td>{item.product_name}</td>
+                    <td style={{ textAlign: 'center' }}>{item.unit || 'ชิ้น'}</td>
+                    <td style={{ textAlign: 'center' }}>{item.quantity}</td>
+                    <td style={{ textAlign: 'right' }}>฿{fmt(parseFloat(item.unit_cost))}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>฿{fmt(parseFloat(item.subtotal))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {/* ===== Payment Detail Table — Receipt only ===== */}
+          {docType === 'receipt' && pay && (
+            <table className="print-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 40, textAlign: 'center' }}>#</th>
+                  <th>รายละเอียด</th>
+                  <th style={{ width: 130, textAlign: 'right' }}>จำนวนเงิน</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ textAlign: 'center' }}>1</td>
+                  <td>
+                    ชำระเงินตาม{payInvoice ? ` ${payInvoice.invoice_number}` : ''} (PO: {poDetail.po_number})
+                    {pay.note && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>หมายเหตุ: {pay.note}</div>}
+                  </td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>฿{fmt(parseFloat(pay.amount))}</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+
+          {/* ===== Summary ===== */}
+          <div className="print-summary">
+            <div className="print-summary-box">
+              {docType === 'receipt' && pay ? (
+                <>
+                  <div className="print-summary-row total" style={{ background: cfg.color }}>
+                    <span>จำนวนเงินที่ชำระ</span>
+                    <span>฿{fmt(parseFloat(pay.amount))}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="print-summary-row">
+                    <span>ยอดรวมก่อน VAT</span>
+                    <span>฿{fmt(parseFloat(docType === 'invoice' && inv ? inv.subtotal : poDetail.subtotal))}</span>
+                  </div>
+                  <div className="print-summary-row">
+                    <span>ภาษีมูลค่าเพิ่ม (7%)</span>
+                    <span>฿{fmt(parseFloat(docType === 'invoice' && inv ? inv.vat_amount : poDetail.vat_amount))}</span>
+                  </div>
+                  {docType === 'invoice' && inv?.wht_amount && parseFloat(inv.wht_amount) > 0 && (
+                    <div className="print-summary-row" style={{ color: '#dc2626' }}>
+                      <span>หัก ณ ที่จ่าย</span>
+                      <span>-฿{fmt(parseFloat(inv.wht_amount))}</span>
+                    </div>
+                  )}
+                  <div className="print-summary-row total" style={{ background: cfg.color }}>
+                    <span>ยอดสุทธิ</span>
+                    <span>฿{fmt(parseFloat(docType === 'invoice' && inv ? inv.total_amount : poDetail.total_amount))}</span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ===== Note ===== */}
+          {((docType === 'po' && poDetail.note) || (docType === 'invoice' && inv?.note) || (docType === 'receipt' && pay?.note)) && (
+            <div className="print-note">
+              <h4>📝 หมายเหตุ</h4>
+              <p>{docType === 'po' ? poDetail.note : docType === 'invoice' ? inv?.note : pay?.note}</p>
+            </div>
+          )}
+
+          {/* ===== Signatures ===== */}
+          <div className="print-signatures">
+            <div className="print-sig-box">
+              <div className="print-sig-line" />
+              <div className="print-sig-label">{docType === 'receipt' ? 'ผู้จ่ายเงิน' : 'ผู้สั่งซื้อ'}</div>
+              <div className="print-sig-sublabel">วันที่ ............/............/............</div>
+            </div>
+            <div className="print-sig-box">
+              <div className="print-sig-line" />
+              <div className="print-sig-label">{docType === 'receipt' ? 'ผู้รับเงิน' : 'ผู้อนุมัติ'}</div>
+              <div className="print-sig-sublabel">วันที่ ............/............/............</div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="print-footer">
+            <p>เอกสารนี้ออกโดยระบบ POS Stock Shop — พิมพ์เมื่อ {new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+

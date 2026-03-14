@@ -13,7 +13,7 @@ router.get('/', async (req, res) => {
     let query = 'SELECT * FROM contacts WHERE company_id = ?'
     const params = [req.user.companyId]
 
-    if (type) { query += ' AND contact_type = ?'; params.push(type) }
+    if (type) { query += ' AND (contact_type = ? OR contact_type = ?)'; params.push(type, 'both') }
     if (active !== undefined) { query += ' AND is_active = ?'; params.push(active === 'true' ? 1 : 0) }
     if (search) { query += ' AND (name LIKE ? OR tax_id LIKE ? OR phone LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`) }
 
