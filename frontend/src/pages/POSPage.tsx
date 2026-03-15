@@ -8,10 +8,12 @@ import { notifications } from '@mantine/notifications'
 import {
   IconPlus, IconMinus, IconTrash, IconSearch, IconCash, IconBarcode,
   IconUser, IconPlayerPause, IconPlayerPlay, IconX, IconCheck, IconReceipt,
-  IconPercentage, IconCreditCard, IconQrcode, IconBuildingBank, IconTool
+  IconPercentage, IconCreditCard, IconQrcode, IconBuildingBank, IconTool,
+  IconPrinter
 } from '@tabler/icons-react'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import api from '../services/api'
+import { useAuthStore } from '../stores/authStore'
 
 interface CartItem {
   productId: number; name: string; sku: string
@@ -41,7 +43,9 @@ export default function POSPage() {
   const [billDiscount, setBillDiscount] = useState<number>(0)
   const [billDiscountType, setBillDiscountType] = useState<'baht' | 'percent'>('baht')
   const searchRef = useRef<HTMLInputElement>(null)
+  const receiptRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const { user, activeCompany } = useAuthStore()
 
   // === Data Queries ===
   const { data: companySettings } = useQuery({
@@ -71,14 +75,31 @@ export default function POSPage() {
   // === Sale Mutation ===
   const saleMutation = useMutation({
     mutationFn: (data: any) => api.post('/sales', data),
-    onSuccess: (res) => {
-      setLastReceipt(res.data)
+    onSuccess: (res, variables) => {
+      // Save full receipt data including items before clearing cart
+      const customerName = customers?.find((c: any) => String(c.id) === customerId)?.name || ''
+      setLastReceipt({
+        ...res.data,
+        items: cart.map(c => ({ ...c })),
+        paymentMethod: paymentMethod,
+        receivedAmount: receivedAmount,
+        changeAmount: paymentMethod === 'cash' ? receivedAmount - res.data.netAmount : 0,
+        customerName,
+        companyName: activeCompany?.company_name || 'Bookdee POS',
+        cashierName: user?.fullName || '',
+        soldAt: new Date().toISOString(),
+        vatEnabled,
+        vatAmount: res.data.vatAmount,
+        billDiscount: billDiscountAmount,
+      })
       setShowReceipt(true)
       setShowPayment(false)
       setCart([])
       setCustomerId('')
       setReceivedAmount(0)
       setPaymentMethod(null)
+      setBillDiscount(0)
+      setBillDiscountType('baht')
       queryClient.invalidateQueries({ queryKey: ['pos-products'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
@@ -589,12 +610,100 @@ export default function POSPage() {
                 <Group justify="space-between"><Text c="dimmed">เงินทอน</Text><Text fw={700} c="blue">฿{fmt(lastReceipt.changeAmount)}</Text></Group>
               )}
             </Stack>
-            <Button fullWidth variant="light" onClick={() => setShowReceipt(false)} leftSection={<IconReceipt size={16} />}>
-              ปิด
-            </Button>
+            <Group grow>
+              <Button variant="light" onClick={() => setShowReceipt(false)}>
+                ปิด
+              </Button>
+              <Button leftSection={<IconPrinter size={16} />} color="indigo"
+                onClick={() => {
+                  const printContent = receiptRef.current
+                  if (!printContent) return
+                  const printWindow = window.open('', '_blank', 'width=320,height=600')
+                  if (!printWindow) return
+                  printWindow.document.write(`<!DOCTYPE html><html><head><title>ใบเสร็จ ${lastReceipt.invoiceNumber}</title>
+                    <style>
+                      @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
+                      * { margin: 0; padding: 0; box-sizing: border-box; }
+                      body { font-family: 'Sarabun', sans-serif; width: 80mm; margin: 0 auto; padding: 4mm; color: #222; font-size: 13px; }
+                      .receipt-center { text-align: center; }
+                      .receipt-header { text-align: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 2px dashed #888; }
+                      .receipt-header h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
+                      .receipt-header p { font-size: 11px; color: #555; }
+                      .receipt-info { font-size: 12px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #aaa; }
+                      .receipt-info div { display: flex; justify-content: space-between; padding: 1px 0; }
+                      .receipt-items { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+                      .receipt-items th { text-align: left; border-bottom: 1px solid #555; padding: 4px 0; font-size: 11px; }
+                      .receipt-items th:last-child, .receipt-items td:last-child { text-align: right; }
+                      .receipt-items td { padding: 3px 0; border-bottom: 1px dotted #ddd; }
+                      .receipt-totals { border-top: 2px dashed #888; padding-top: 6px; margin-bottom: 8px; font-size: 13px; }
+                      .receipt-totals div { display: flex; justify-content: space-between; padding: 2px 0; }
+                      .receipt-totals .grand-total { font-size: 18px; font-weight: 700; padding: 4px 0; border-top: 1px solid #333; margin-top: 4px; }
+                      .receipt-payment { border-top: 1px dashed #aaa; padding-top: 6px; margin-bottom: 10px; font-size: 12px; }
+                      .receipt-payment div { display: flex; justify-content: space-between; padding: 1px 0; }
+                      .receipt-footer { text-align: center; font-size: 11px; color: #555; padding-top: 8px; border-top: 2px dashed #888; }
+                      .receipt-footer p { margin: 2px 0; }
+                      @media print { @page { size: 80mm auto; margin: 0; } body { width: 80mm; } }
+                    </style></head><body>${printContent.innerHTML}</body></html>`)
+                  printWindow.document.close()
+                  printWindow.focus()
+                  setTimeout(() => { printWindow.print(); printWindow.close() }, 400)
+                }}>
+                พิมพ์ใบเสร็จ
+              </Button>
+            </Group>
           </Stack>
         )}
       </Modal>
+
+      {/* === Hidden Receipt Template for Print === */}
+      {lastReceipt && (
+        <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+          <div ref={receiptRef}>
+            <div className="receipt-header">
+              <h1>{lastReceipt.companyName}</h1>
+              <p>ใบเสร็จรับเงิน / Receipt</p>
+            </div>
+            <div className="receipt-info">
+              <div><span>เลขที่:</span><span>{lastReceipt.invoiceNumber}</span></div>
+              <div><span>วันที่:</span><span>{new Date(lastReceipt.soldAt).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' })} {new Date(lastReceipt.soldAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span></div>
+              <div><span>แคชเชียร์:</span><span>{lastReceipt.cashierName}</span></div>
+              {lastReceipt.customerName && <div><span>ลูกค้า:</span><span>{lastReceipt.customerName}</span></div>}
+            </div>
+            <table className="receipt-items">
+              <thead><tr><th>รายการ</th><th>จน.</th><th>รวม</th></tr></thead>
+              <tbody>
+                {lastReceipt.items?.map((item: any, i: number) => (
+                  <tr key={i}>
+                    <td>{item.name}<br/><span style={{ fontSize: 10, color: '#888' }}>@฿{fmt(item.unitPrice)}</span></td>
+                    <td>{item.quantity}</td>
+                    <td>{fmt(item.unitPrice * item.quantity - (item.discount || 0))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="receipt-totals">
+              <div><span>ยอดรวม</span><span>฿{fmt(lastReceipt.totalAmount)}</span></div>
+              {lastReceipt.discountAmount > 0 && <div><span>ส่วนลด</span><span>-฿{fmt(lastReceipt.discountAmount)}</span></div>}
+              {lastReceipt.vatEnabled && lastReceipt.vatAmount > 0 && <div><span>VAT</span><span>฿{fmt(lastReceipt.vatAmount)}</span></div>}
+              <div className="grand-total"><span>ยอดสุทธิ</span><span>฿{fmt(lastReceipt.netAmount)}</span></div>
+            </div>
+            <div className="receipt-payment">
+              <div><span>ชำระโดย</span><span>{{ cash: 'เงินสด', transfer: 'โอนเงิน', credit_card: 'บัตรเครดิต', qr_code: 'QR Code' }[lastReceipt.paymentMethod as string] || lastReceipt.paymentMethod}</span></div>
+              {lastReceipt.paymentMethod === 'cash' && lastReceipt.receivedAmount > 0 && (
+                <>
+                  <div><span>รับเงิน</span><span>฿{fmt(lastReceipt.receivedAmount)}</span></div>
+                  <div style={{ fontWeight: 700 }}><span>เงินทอน</span><span>฿{fmt(lastReceipt.changeAmount)}</span></div>
+                </>
+              )}
+            </div>
+            <div className="receipt-footer">
+              <p style={{ fontWeight: 700 }}>ขอบคุณที่ใช้บริการ ♥</p>
+              <p>Thank you & See you again!</p>
+              <p style={{ marginTop: 6, fontSize: 10 }}>Powered by Bookdee POS</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* === Held Orders Modal === */}
       <Modal opened={showHeld} onClose={() => setShowHeld(false)} title={`⏸️ บิลที่พัก (${heldOrders.length})`} size="md" centered>
