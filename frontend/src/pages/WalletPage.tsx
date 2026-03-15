@@ -12,6 +12,7 @@ import {
   IconStarFilled, IconSearch
 } from '@tabler/icons-react'
 import api from '../services/api'
+import type { WalletChannel } from '../types'
 
 const channelTypes = [
   { value: 'cash', label: '💵 เงินสด', icon: IconCash, color: 'green' },
@@ -53,7 +54,7 @@ export default function WalletPage() {
   })
 
   const saveMutation = useMutation({
-    mutationFn: (data: any) => editId
+    mutationFn: (data: Partial<WalletChannel> & { name: string; type: string }) => editId
       ? api.put(`/wallet/${editId}`, data)
       : api.post('/wallet', data),
     onSuccess: () => {
@@ -87,7 +88,7 @@ export default function WalletPage() {
     api.get('/wallet/next-code').then(r => setNextCode(r.data.code)).catch(() => {})
   }
 
-  const openEdit = (ch: any) => {
+  const openEdit = (ch: WalletChannel) => {
     setEditId(ch.id)
     setNextCode(ch.channel_code || '')
     setForm({
@@ -122,7 +123,7 @@ export default function WalletPage() {
 
   const getTypeInfo = (type: string) => channelTypes.find(t => t.value === type) || channelTypes[5]
 
-  const filteredChannels = channels.filter((ch: any) =>
+  const filteredChannels = channels.filter((ch: WalletChannel) =>
     !search || ch.name.toLowerCase().includes(search.toLowerCase()) ||
     (ch.channel_code && ch.channel_code.toLowerCase().includes(search.toLowerCase())) ||
     (ch.account_number && ch.account_number.includes(search)) ||
@@ -157,7 +158,7 @@ export default function WalletPage() {
       {/* Summary Cards */}
       <SimpleGrid cols={{ base: 2, sm: 3, md: 6 }} spacing="sm">
         {channelTypes.map(ct => {
-          const count = channels.filter((c: any) => c.type === ct.value && c.is_active).length
+          const count = channels.filter((c: WalletChannel) => c.type === ct.value && c.is_active).length
           return (
             <Card key={ct.value} padding="sm" radius="md" withBorder
               style={{ borderColor: count > 0 ? `var(--mantine-color-${ct.color}-3)` : undefined }}>
@@ -188,7 +189,7 @@ export default function WalletPage() {
         </Stack>
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-          {filteredChannels.map((ch: any) => {
+          {filteredChannels.map((ch: WalletChannel) => {
             const typeInfo = getTypeInfo(ch.type)
             const TypeIcon = typeInfo.icon
             return (

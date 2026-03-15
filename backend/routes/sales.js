@@ -14,7 +14,7 @@ router.post('/', async (req, res) => {
   try {
     await connection.beginTransaction()
 
-    const { items, customerId, paymentMethod, discountAmount, note, payments: paymentList } = req.body
+    const { items, customerId, paymentMethod, discountAmount, note, payments: paymentList, paymentChannelId } = req.body
     const companyId = req.user.companyId
 
     if (!items || items.length === 0) {
@@ -87,11 +87,11 @@ router.post('/', async (req, res) => {
     // Insert sale
     const [saleResult] = await connection.execute(
       `INSERT INTO sales (company_id, invoice_number, sale_type, customer_id, total_amount, 
-       discount_amount, vat_amount, net_amount, payment_method, payment_status, cashier_id, note)
-       VALUES (?, ?, 'pos', ?, ?, ?, ?, ?, ?, 'paid', ?, ?)`,
+       discount_amount, vat_amount, net_amount, payment_method, payment_channel_id, payment_status, cashier_id, note)
+       VALUES (?, ?, 'pos', ?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?)`,
       [companyId, invoiceNumber, customerId || null, totalAmount, discount,
        Math.round(vatAmount * 100) / 100, netAmount, paymentMethod || 'cash',
-       req.user.id, note || null]
+       paymentChannelId || null, req.user.id, note || null]
     )
 
     const saleId = saleResult.insertId
@@ -118,14 +118,14 @@ router.post('/', async (req, res) => {
     if (paymentList && paymentList.length > 0) {
       for (const payment of paymentList) {
         await connection.execute(
-          'INSERT INTO payments (sale_id, method, amount, reference_number) VALUES (?, ?, ?, ?)',
-          [saleId, payment.method, payment.amount, payment.referenceNumber || null]
+          'INSERT INTO payments (sale_id, method, payment_channel_id, amount, reference_number) VALUES (?, ?, ?, ?, ?)',
+          [saleId, payment.method, payment.paymentChannelId || null, payment.amount, payment.referenceNumber || null]
         )
       }
     } else {
       await connection.execute(
-        'INSERT INTO payments (sale_id, method, amount) VALUES (?, ?, ?)',
-        [saleId, paymentMethod || 'cash', netAmount]
+        'INSERT INTO payments (sale_id, method, payment_channel_id, amount) VALUES (?, ?, ?, ?)',
+        [saleId, paymentMethod || 'cash', paymentChannelId || null, netAmount]
       )
     }
 

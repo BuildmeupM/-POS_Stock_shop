@@ -12,6 +12,7 @@ import {
   IconReceiptOff, IconCheck, IconX, IconDots
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt } from '../utils/formatters'
 
 const paymentMethodLabels: Record<string, { label: string; color: string; icon: any }> = {
   cash: { label: 'เงินสด', color: 'green', icon: IconCash },
@@ -77,7 +78,7 @@ export default function ExpensePage() {
     },
   })
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
+
   const expenseAccounts = accounts?.filter((a: any) => a.account_type === 'expense') || []
 
   const filteredExpenses = useMemo(() => {

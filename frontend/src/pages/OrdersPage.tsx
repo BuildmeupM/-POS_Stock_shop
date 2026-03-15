@@ -13,50 +13,15 @@ import {
   IconMapPin, IconFileInvoice, IconArrowRight, IconAlertTriangle, IconTrash
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt, fmtDateTime as fmtDate } from '../utils/formatters'
+import {
+  ORDER_STATUSES as statusConfig,
+  PLATFORM_CONFIG as platformConfig,
+  PAYMENT_LABELS as paymentLabels,
+  ORDER_NEXT_STATUS as nextStatus,
+} from '../utils/constants'
 
 const PAGE_SIZE = 15
-
-const statusConfig: Record<string, { color: string; label: string; icon: any }> = {
-  pending:    { color: 'yellow', label: 'รอยืนยัน', icon: IconClock },
-  confirmed:  { color: 'blue',   label: 'ยืนยันแล้ว', icon: IconCheck },
-  packing:    { color: 'cyan',   label: 'กำลังแพ็ค', icon: IconPackage },
-  shipped:    { color: 'indigo',  label: 'จัดส่งแล้ว', icon: IconTruckDelivery },
-  delivered:  { color: 'green',   label: 'ได้รับแล้ว', icon: IconCheck },
-  cancelled:  { color: 'red',     label: 'ยกเลิก', icon: IconX },
-  returned:   { color: 'orange',  label: 'คืนสินค้า', icon: IconAlertTriangle },
-}
-
-const platformConfig: Record<string, { label: string; color: string; icon: any }> = {
-  website:  { label: 'Website', color: 'blue', icon: IconWorld },
-  facebook: { label: 'Facebook', color: 'blue', icon: IconBrandFacebook },
-  line:     { label: 'LINE', color: 'green', icon: IconPhone },
-  shopee:   { label: 'Shopee', color: 'orange', icon: IconBrandShopee },
-  lazada:   { label: 'Lazada', color: 'blue', icon: IconShoppingBag },
-  other:    { label: 'อื่นๆ', color: 'gray', icon: IconWorld },
-}
-
-const paymentLabels: Record<string, string> = {
-  transfer: 'โอนเงิน', cod: 'เก็บปลายทาง', credit_card: 'บัตรเครดิต', qr_code: 'QR Code',
-}
-
-const nextStatus: Record<string, string[]> = {
-  pending:   ['confirmed', 'cancelled'],
-  confirmed: ['packing', 'cancelled'],
-  packing:   ['shipped', 'cancelled'],
-  shipped:   ['delivered', 'returned'],
-  delivered: [],
-  cancelled: [],
-  returned:  [],
-}
-
-interface OrderItem {
-  productId: number
-  name: string
-  sku: string
-  quantity: number
-  unitPrice: number
-  discount: number
-}
 
 export default function OrdersPage() {
   const navigate = useNavigate()
@@ -69,10 +34,7 @@ export default function OrdersPage() {
   const [shippingProviderInput, setShippingProviderInput] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<{id: number; number: string} | null>(null)
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
-  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('th-TH', { 
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' 
-  }) : '-'
+
 
   // === Queries ===
   const { data: orders = [], isLoading } = useQuery({

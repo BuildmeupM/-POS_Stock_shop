@@ -4,6 +4,7 @@ import { IconCash, IconShoppingCart, IconAlertTriangle, IconTruckDelivery, IconT
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
 import { useState } from 'react'
 import api from '../services/api'
+import { fmt } from '../utils/formatters'
 
 export default function DashboardPage() {
   const [trendDays, setTrendDays] = useState('30')
@@ -25,7 +26,7 @@ export default function DashboardPage() {
 
   if (isLoading) return <Loader style={{ margin: '40px auto', display: 'block' }} />
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
+
   const fmtShort = (n: number) => {
     if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
     if (n >= 1000) return `${(n / 1000).toFixed(1)}K`

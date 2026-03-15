@@ -15,68 +15,18 @@ import {
   IconEdit, IconDeviceFloppy, IconTrash, IconPlus, IconArrowBackUp
 } from '@tabler/icons-react'
 import api from '../services/api'
-
-const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
-const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('th-TH', {
-  year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
-}) : '-'
-
-const statusConfig: Record<string, { color: string; label: string; icon: any }> = {
-  pending:    { color: 'yellow', label: 'รอยืนยัน', icon: IconClock },
-  confirmed:  { color: 'blue',   label: 'ยืนยันแล้ว', icon: IconCheck },
-  packing:    { color: 'cyan',   label: 'กำลังแพ็ค', icon: IconPackage },
-  shipped:    { color: 'indigo',  label: 'จัดส่งแล้ว', icon: IconTruckDelivery },
-  delivered:  { color: 'green',   label: 'ได้รับแล้ว', icon: IconCheck },
-  cancelled:  { color: 'red',     label: 'ยกเลิก', icon: IconX },
-  returned:   { color: 'orange',  label: 'คืนสินค้า', icon: IconAlertTriangle },
-}
-
-const platformConfig: Record<string, { label: string; color: string; icon: any }> = {
-  website:  { label: 'Website', color: 'blue', icon: IconWorld },
-  facebook: { label: 'Facebook', color: 'blue', icon: IconBrandFacebook },
-  line:     { label: 'LINE', color: 'green', icon: IconPhone },
-  shopee:   { label: 'Shopee', color: 'orange', icon: IconBrandShopee },
-  lazada:   { label: 'Lazada', color: 'blue', icon: IconShoppingBag },
-  other:    { label: 'อื่นๆ', color: 'gray', icon: IconWorld },
-}
-
-const platformOptions = [
-  { value: 'facebook', label: '📘 Facebook' },
-  { value: 'line', label: '💬 LINE' },
-  { value: 'shopee', label: '🟠 Shopee' },
-  { value: 'lazada', label: '🔵 Lazada' },
-  { value: 'website', label: '🌐 Website' },
-  { value: 'other', label: '📦 อื่นๆ' },
-]
-
-const paymentOptions = [
-  { value: 'transfer', label: '🏦 โอนเงิน' },
-  { value: 'cod', label: '📦 เก็บปลายทาง (COD)' },
-  { value: 'credit_card', label: '💳 บัตรเครดิต' },
-  { value: 'qr_code', label: '📱 QR Code' },
-]
-
-const paymentLabels: Record<string, string> = {
-  transfer: '🏦 โอนเงิน', cod: '📦 เก็บปลายทาง', credit_card: '💳 บัตรเครดิต', qr_code: '📱 QR Code',
-}
-
-const nextStatus: Record<string, string[]> = {
-  pending:   ['confirmed', 'cancelled'],
-  confirmed: ['packing', 'cancelled'],
-  packing:   ['shipped', 'cancelled'],
-  shipped:   ['delivered', 'returned'],
-  delivered: [],
-  cancelled: [],
-  returned:  [],
-}
-
-// Previous status mapping for rollback
-const prevStatus: Record<string, string> = {
-  confirmed: 'pending',
-  packing:   'confirmed',
-  shipped:   'packing',
-  delivered: 'shipped',
-}
+import { fmt, fmtDateTimeFull as fmtDate } from '../utils/formatters'
+import OrderStepper from './orders/OrderStepper'
+import { printOrder } from './orders/printOrder'
+import {
+  ORDER_STATUSES as statusConfig,
+  PLATFORM_CONFIG as platformConfig,
+  PLATFORM_OPTIONS as platformOptions,
+  PAYMENT_OPTIONS as paymentOptions,
+  PAYMENT_LABELS as paymentLabels,
+  ORDER_NEXT_STATUS as nextStatus,
+  ORDER_PREV_STATUS as prevStatus,
+} from '../utils/constants'
 
 export default function OrderDetailPage() {
   const { id } = useParams()
@@ -230,6 +180,9 @@ export default function OrderDetailPage() {
     })
   }
 
+  // ===== PRINT FUNCTION =====
+    printOrder(order, creditNote)
+
   if (isLoading || !order) {
     return <Loader style={{ margin: '60px auto', display: 'block' }} />
   }
@@ -285,7 +238,7 @@ export default function OrderDetailPage() {
               </Button>
             </>
           )}
-          <Button variant="light" color="gray" leftSection={<IconPrinter size={16} />}>
+          <Button variant="light" color="gray" leftSection={<IconPrinter size={16} />} onClick={() => printOrder(order, creditNote)}>
             พิมพ์
           </Button>
         </Group>
@@ -667,67 +620,3 @@ export default function OrderDetailPage() {
   )
 }
 
-/* ====================================================================
-   ORDER STATUS STEPPER
-   ==================================================================== */
-function OrderStepper({ status, onStepClick, isLoading }: { status: string; onStepClick: (status: string) => void; isLoading: boolean }) {
-  const steps = [
-    { key: 'pending', label: 'รอยืนยัน', icon: '⏳', desc: 'สร้างออเดอร์' },
-    { key: 'confirmed', label: 'ยืนยัน', icon: '✅', desc: 'ยืนยันออเดอร์' },
-    { key: 'packing', label: 'แพ็คสินค้า', icon: '📦', desc: 'เตรียมจัดส่ง' },
-    { key: 'shipped', label: 'จัดส่งแล้ว', icon: '🚚', desc: 'ส่งพัสดุ' },
-    { key: 'delivered', label: 'ได้รับแล้ว', icon: '🏠', desc: 'ลูกค้าได้รับ' },
-    { key: 'returned', label: 'คืนสินค้า', icon: '🔄', desc: 'คืนสินค้า' },
-  ]
-
-  const statusOrder = ['pending', 'confirmed', 'packing', 'shipped', 'delivered', 'returned']
-  const currentIdx = statusOrder.indexOf(status)
-  const isCancelled = status === 'cancelled'
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, padding: '12px 0' }}>
-      {steps.map((step, idx) => {
-        const isDone = idx < currentIdx || (idx === currentIdx && status === 'delivered')
-        const isCurrent = idx === currentIdx && !isCancelled
-        const isClickable = !isCancelled && !isLoading && idx !== currentIdx
-        return (
-          <div key={step.key} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, flex: 1,
-              cursor: isClickable ? 'pointer' : 'default', opacity: isLoading ? 0.6 : 1,
-            }}
-              onClick={() => isClickable && onStepClick(step.key)}
-              title={isClickable ? `เปลี่ยนเป็น "${step.label}"` : undefined}
-            >
-              <div style={{
-                width: 52, height: 52, borderRadius: '50%', display: 'flex',
-                alignItems: 'center', justifyContent: 'center', fontSize: 22,
-                background: isDone ? '#059669' : isCurrent ? '#4f46e5' : isCancelled ? '#ef4444' : '#f3f4f6',
-                color: isDone || isCurrent || isCancelled ? '#fff' : '#9ca3af',
-                boxShadow: isCurrent ? '0 0 0 4px rgba(79,70,229,0.2)' : isDone ? '0 0 0 4px rgba(5,150,105,0.15)' : undefined,
-                transition: 'all 0.3s ease',
-                transform: isClickable ? undefined : undefined,
-              }}
-                onMouseEnter={(e) => { if (isClickable) e.currentTarget.style.transform = 'scale(1.1)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
-              >
-                {isDone ? '✓' : step.icon}
-              </div>
-              <Text size="sm" fw={isDone || isCurrent ? 700 : 500}
-                c={isDone ? 'green' : isCurrent ? 'indigo' : 'dimmed'}>
-                {step.label}
-              </Text>
-              <Text size="xs" c="dimmed" ta="center" style={{ lineHeight: 1.2 }}>{step.desc}</Text>
-            </div>
-            {idx < steps.length - 1 && (
-              <div style={{
-                height: 3, flex: 1, borderRadius: 2, minWidth: 24, marginTop: 25,
-                background: isDone ? '#059669' : '#e5e7eb',
-                transition: 'background 0.3s ease',
-              }} />
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}

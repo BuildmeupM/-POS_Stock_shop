@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { platform, customerId, customerName, customerPhone, shippingAddress,
-            items, shippingCost, discountAmount, paymentMethod, note } = req.body
+            items, shippingCost, discountAmount, paymentMethod, paymentChannelId, note } = req.body
     const companyId = req.user.companyId
     const orderNumber = await generateDocNumber('ORD', companyId, 'online_orders', 'order_number')
     let totalAmount = 0
@@ -43,11 +43,11 @@ router.post('/', async (req, res) => {
     const result = await executeQuery(
       `INSERT INTO online_orders (company_id, order_number, platform, customer_id, customer_name,
        customer_phone, shipping_address, total_amount, shipping_cost, discount_amount, net_amount,
-       payment_method, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       payment_method, payment_channel_id, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [companyId, orderNumber, platform || 'website', customerId || null,
        customerName || null, customerPhone || null, shippingAddress || null,
        totalAmount, shippingCost || 0, discountAmount || 0, netAmount,
-       paymentMethod || 'transfer', note || null, req.user.id]
+       paymentMethod || 'transfer', paymentChannelId || null, note || null, req.user.id]
     )
     const orderId = result.insertId
     if (items) {

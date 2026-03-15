@@ -12,25 +12,12 @@ import {
   IconEye, IconReceipt, IconCreditCard
 } from '@tabler/icons-react'
 import api from '../services/api'
-
-const PO_STATUSES: Record<string, { label: string; color: string }> = {
-  draft: { label: 'ฉบับร่าง', color: 'gray' },
-  approved: { label: 'รอรับสินค้า', color: 'blue' },
-  partial: { label: 'รับบางส่วน', color: 'orange' },
-  received: { label: 'รับครบแล้ว', color: 'teal' },
-  invoiced: { label: 'แจ้งหนี้แล้ว', color: 'violet' },
-  paid: { label: 'จ่ายครบแล้ว', color: 'green' },
-  cancelled: { label: 'ยกเลิก', color: 'red' },
-}
-
-const INV_STATUSES: Record<string, { label: string; color: string }> = {
-  pending: { label: 'รอชำระ', color: 'orange' },
-  partial: { label: 'ชำระบางส่วน', color: 'blue' },
-  paid: { label: 'ชำระครบ', color: 'green' },
-}
-
-const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
-const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' }) : '-'
+import { fmt, fmtDate } from '../utils/formatters'
+import { PO_STATUSES, INV_STATUSES } from '../utils/constants'
+import type {
+  PurchaseOrder, PurchaseOrderItem, Warehouse, WalletChannel, Contact, Product,
+  PurchaseReceiveItem, Invoice, GRN, PurchasePayment, ApiError
+} from '../types'
 
 export default function PurchasePage() {
   const [activeTab, setActiveTab] = useState<'po' | 'grn' | 'invoices' | 'payments'>('po')
@@ -191,7 +178,7 @@ function PurchaseOrdersTab() {
   const orders = useMemo(() => {
     if (!allOrders) return []
     if (!statusFilter) return allOrders
-    return allOrders.filter((o: any) => o.status === statusFilter)
+    return allOrders.filter((o: PurchaseOrder) => o.status === statusFilter)
   }, [allOrders, statusFilter])
 
   const { data: products } = useQuery({
@@ -204,8 +191,25 @@ function PurchaseOrdersTab() {
     queryFn: () => api.get('/inventory/warehouses').then(r => r.data),
   })
 
+  const { data: walletChannels = [] } = useQuery({
+    queryKey: ['wallet-channels-active'],
+    queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
+    staleTime: 1000 * 60 * 5,
+  })
+
+  const payChannelOptions = walletChannels.length > 0
+    ? walletChannels.map((ch: WalletChannel) => ({
+        value: String(ch.id),
+        label: `${ch.type === 'cash' ? '💵' : ch.type === 'bank_account' ? '🏦' : ch.type === 'promptpay' ? '📱' : ch.type === 'credit_card' ? '💳' : '📋'} ${ch.name}`,
+      }))
+    : [
+        { value: '_transfer', label: '🏦 โอนเงิน' },
+        { value: '_cash', label: '💵 เงินสด' },
+        { value: '_cheque', label: '📝 เช็ค' },
+      ]
+
   const statusMutation = useMutation({
-    mutationFn: ({ id, status }: any) => api.put(`/purchases/${id}/status`, { status }),
+    mutationFn: ({ id, status }: { id: number; status: string }) => api.put(`/purchases/${id}/status`, { status }),
     onSuccess: () => {
       notifications.show({ title: 'สำเร็จ', message: 'อัพเดตสถานะสำเร็จ', color: 'green' })
       queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
@@ -227,7 +231,7 @@ function PurchaseOrdersTab() {
 
   const receiveItemsReady = useMemo(() => {
     if (!receiveDetailData?.items) return []
-    return receiveDetailData.items.map((item: any) => ({
+    return receiveDetailData.items.map((item: PurchaseOrderItem) => ({
       poItemId: item.id, productId: item.product_id, productName: item.product_name,
       sku: item.sku, ordered: item.quantity, alreadyReceived: item.received_quantity,
       remaining: item.quantity - item.received_quantity,
@@ -236,7 +240,7 @@ function PurchaseOrdersTab() {
     }))
   }, [receiveDetailData])
 
-  const openReceive = (po: any) => {
+  const openReceive = (po: PurchaseOrder) => {
     setSelectedPO(po)
     setReceiveNote('')
     setTaxInvoiceNumber('')
@@ -246,7 +250,7 @@ function PurchaseOrdersTab() {
   }
 
   const receiveMutation = useMutation({
-    mutationFn: (data: any) => api.post('/purchases/receipts', data),
+    mutationFn: (data: Record<string, unknown>) => api.post('/purchases/receipts', data),
     onSuccess: (res) => {
       notifications.show({ title: 'สำเร็จ', message: `รับสินค้า: ${res.data.grnNumber}${res.data.invoiceNumber ? ` + ใบแจ้งหนี้: ${res.data.invoiceNumber}` : ''}`, color: 'green' })
       setReceiveModal(false); setSelectedPO(null)
@@ -254,22 +258,24 @@ function PurchaseOrdersTab() {
       queryClient.invalidateQueries({ queryKey: ['goods-receipts'] })
       queryClient.invalidateQueries({ queryKey: ['purchase-invoices'] })
     },
-    onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับสินค้าได้', color: 'red' }),
+    onError: (err: ApiError) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับสินค้าได้', color: 'red' }),
   })
 
   // --- Pay Modal ---
   const [payInvoiceId, setPayInvoiceId] = useState('')
   const [payAmount, setPayAmount] = useState(0)
   const [payMethod, setPayMethod] = useState('transfer')
+  const [payChannelId, setPayChannelId] = useState<number | null>(null)
   const [payRef, setPayRef] = useState('')
   const [payBank, setPayBank] = useState('')
   const [payNote, setPayNote] = useState('')
 
-  const openPay = (po: any) => {
+  const openPay = (po: PurchaseOrder) => {
     setSelectedPO(po)
     setPayInvoiceId('')
     setPayAmount(0)
     setPayMethod('transfer')
+    setPayChannelId(null)
     setPayRef('')
     setPayBank('')
     setPayNote('')
@@ -283,7 +289,7 @@ function PurchaseOrdersTab() {
   })
 
   const payMutation = useMutation({
-    mutationFn: (data: any) => api.post('/purchases/payments', data),
+    mutationFn: (data: Record<string, unknown>) => api.post('/purchases/payments', data),
     onSuccess: () => {
       notifications.show({ title: 'สำเร็จ', message: 'บันทึกการชำระเงินสำเร็จ', color: 'green' })
       setPayModal(false); setSelectedPO(null)
@@ -291,7 +297,7 @@ function PurchaseOrdersTab() {
       queryClient.invalidateQueries({ queryKey: ['purchase-invoices'] })
       queryClient.invalidateQueries({ queryKey: ['purchase-payments'] })
     },
-    onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ผิดพลาด', color: 'red' }),
+    onError: (err: ApiError) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ผิดพลาด', color: 'red' }),
   })
 
   if (isLoading) return <Loader style={{ margin: '40px auto', display: 'block' }} />
@@ -303,13 +309,13 @@ function PurchaseOrdersTab() {
         const all = allOrders || []
         const statusTabs = [
           { key: null, label: 'ทั้งหมด', color: '#4f46e5', count: all.length },
-          { key: 'draft', label: 'ฉบับร่าง', color: '#6b7280', count: all.filter((o: any) => o.status === 'draft').length },
-          { key: 'approved', label: 'รอรับสินค้า', color: '#2563eb', count: all.filter((o: any) => o.status === 'approved').length },
-          { key: 'partial', label: 'รับบางส่วน', color: '#f59e0b', count: all.filter((o: any) => o.status === 'partial').length },
-          { key: 'received', label: 'รับครบแล้ว', color: '#0d9488', count: all.filter((o: any) => o.status === 'received').length },
-          { key: 'invoiced', label: 'รอชำระเงิน', color: '#7c3aed', count: all.filter((o: any) => o.status === 'invoiced').length },
-          { key: 'paid', label: 'ชำระครบแล้ว', color: '#059669', count: all.filter((o: any) => o.status === 'paid').length },
-          { key: 'cancelled', label: 'ยกเลิก', color: '#ef4444', count: all.filter((o: any) => o.status === 'cancelled').length },
+          { key: 'draft', label: 'ฉบับร่าง', color: '#6b7280', count: all.filter((o: PurchaseOrder) => o.status === 'draft').length },
+          { key: 'approved', label: 'รอรับสินค้า', color: '#2563eb', count: all.filter((o: PurchaseOrder) => o.status === 'approved').length },
+          { key: 'partial', label: 'รับบางส่วน', color: '#f59e0b', count: all.filter((o: PurchaseOrder) => o.status === 'partial').length },
+          { key: 'received', label: 'รับครบแล้ว', color: '#0d9488', count: all.filter((o: PurchaseOrder) => o.status === 'received').length },
+          { key: 'invoiced', label: 'รอชำระเงิน', color: '#7c3aed', count: all.filter((o: PurchaseOrder) => o.status === 'invoiced').length },
+          { key: 'paid', label: 'ชำระครบแล้ว', color: '#059669', count: all.filter((o: PurchaseOrder) => o.status === 'paid').length },
+          { key: 'cancelled', label: 'ยกเลิก', color: '#ef4444', count: all.filter((o: PurchaseOrder) => o.status === 'cancelled').length },
         ]
         return (
           <div style={{
@@ -377,7 +383,7 @@ function PurchaseOrdersTab() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {orders.map((po: any) => {
+              {orders.map((po: PurchaseOrder) => {
                 const st = PO_STATUSES[po.status] || PO_STATUSES.draft
                 return (
                   <Table.Tr key={po.id}
@@ -406,7 +412,7 @@ function PurchaseOrdersTab() {
         <Stack gap="md">
           <Group grow>
             <Select label="คลังสินค้าที่รับเข้า *" required
-              data={(warehouses || []).map((w: any) => ({ value: String(w.id), label: w.name }))}
+              data={(warehouses || []).map((w: Warehouse) => ({ value: String(w.id), label: w.name }))}
               value={receiveWarehouseId} onChange={(v) => setReceiveWarehouseId(v || '')} />
           </Group>
 
@@ -424,7 +430,7 @@ function PurchaseOrdersTab() {
               <Table>
                 <Table.Thead><Table.Tr><Table.Th>SKU</Table.Th><Table.Th>สินค้า</Table.Th><Table.Th ta="center">สั่ง</Table.Th><Table.Th ta="center">รับแล้ว</Table.Th><Table.Th ta="center">คงเหลือ</Table.Th><Table.Th ta="center">รับครั้งนี้</Table.Th><Table.Th ta="center">ราคาทุน</Table.Th></Table.Tr></Table.Thead>
                 <Table.Tbody>
-                  {receiveItemsReady.map((item: any) => (
+                  {receiveItemsReady.map((item: PurchaseReceiveItem) => (
                     <Table.Tr key={item.poItemId} style={{ opacity: item.remaining <= 0 ? 0.4 : 1 }}>
                       <Table.Td><Text size="sm" ff="monospace">{item.sku}</Text></Table.Td>
                       <Table.Td>{item.productName}</Table.Td>
@@ -452,7 +458,7 @@ function PurchaseOrdersTab() {
               taxInvoiceNumber: taxInvoiceNumber || null,
               dueDate: dueDate || null,
               createInvoice: true,
-              items: receiveItemsReady.filter((i: any) => i.receivedQuantity > 0 && i.remaining > 0).map((i: any) => ({
+              items: receiveItemsReady.filter((i: PurchaseReceiveItem) => i.receivedQuantity > 0 && i.remaining > 0).map((i: PurchaseReceiveItem) => ({
                 poItemId: i.poItemId, productId: i.productId,
                 receivedQuantity: i.receivedQuantity, costPerUnit: i.costPerUnit,
               })),
@@ -466,26 +472,33 @@ function PurchaseOrdersTab() {
       <Modal opened={payModal} onClose={() => { setPayModal(false); setSelectedPO(null) }}
         title={`💰 ชำระเงิน: ${selectedPO?.po_number || ''}`} size="md">
         <Stack gap="md">
-          {payInvoices?.invoices?.filter((i: any) => i.status !== 'paid').length > 0 ? (
+          {payInvoices?.invoices?.filter((i: Invoice) => i.status !== 'paid').length > 0 ? (
             <>
               <Select label="เลือกใบแจ้งหนี้ *" required
-                data={(payInvoices?.invoices || []).filter((i: any) => i.status !== 'paid').map((i: any) => ({
+                data={(payInvoices?.invoices || []).filter((i: Invoice) => i.status !== 'paid').map((i: Invoice) => ({
                   value: String(i.id),
                   label: `${i.invoice_number} — ฿${fmt(parseFloat(i.total_amount) - parseFloat(i.paid_amount))} ค้างชำระ`,
                 }))}
                 value={payInvoiceId}
                 onChange={(v) => {
                   setPayInvoiceId(v || '')
-                  const inv = payInvoices?.invoices?.find((i: any) => String(i.id) === v)
+                  const inv = payInvoices?.invoices?.find((i: Invoice) => String(i.id) === v)
                   if (inv) setPayAmount(parseFloat(inv.total_amount) - parseFloat(inv.paid_amount))
                 }} />
               <NumberInput label="จำนวนเงิน *" min={0.01} decimalScale={2} value={payAmount}
                 onChange={(v) => setPayAmount(Number(v) || 0)} prefix="฿" />
-              <Select label="วิธีชำระ" data={[
-                { value: 'transfer', label: '🏦 โอนเงิน' },
-                { value: 'cash', label: '💵 เงินสด' },
-                { value: 'cheque', label: '📝 เช็ค' },
-              ]} value={payMethod} onChange={(v) => setPayMethod(v || 'transfer')} />
+              <Select label="วิธีชำระ" data={payChannelOptions}
+                value={payChannelId ? String(payChannelId) : (walletChannels.length > 0 ? null : '_transfer')}
+                onChange={(v) => {
+                  if (v && !v.startsWith('_')) {
+                    const ch = walletChannels.find((c: WalletChannel) => String(c.id) === v)
+                    setPayChannelId(Number(v))
+                    setPayMethod(ch?.type === 'bank_account' ? 'transfer' : ch?.type || 'transfer')
+                  } else {
+                    setPayChannelId(null)
+                    setPayMethod(v ? v.replace('_', '') : 'transfer')
+                  }
+                }} />
               <Group grow>
                 <TextInput label="เลขอ้างอิง" placeholder="เลขที่โอน/เช็ค" value={payRef}
                   onChange={(e) => setPayRef(e.target.value)} />
@@ -496,7 +509,8 @@ function PurchaseOrdersTab() {
                 leftSection={<IconCreditCard size={18} />}
                 onClick={() => payMutation.mutate({
                   invoiceId: parseInt(payInvoiceId), amount: payAmount,
-                  paymentMethod: payMethod, referenceNumber: payRef,
+                paymentMethod: payMethod, paymentChannelId: payChannelId,
+                referenceNumber: payRef,
                   bankName: payBank, note: payNote,
                 })}>
                 ยืนยันชำระเงิน
@@ -532,7 +546,7 @@ function GoodsReceiptTab() {
           <Table striped highlightOnHover>
             <Table.Thead><Table.Tr><Table.Th>เลขที่ GRN</Table.Th><Table.Th>อ้างอิง PO</Table.Th><Table.Th>ผู้ขาย</Table.Th><Table.Th>คลัง</Table.Th><Table.Th>วันที่รับ</Table.Th><Table.Th ta="center">รายการ</Table.Th><Table.Th>ผู้รับ</Table.Th></Table.Tr></Table.Thead>
             <Table.Tbody>
-              {receipts.map((grn: any) => (
+              {receipts.map((grn: GRN) => (
                 <Table.Tr key={grn.id}>
                   <Table.Td><Text size="sm" fw={700} ff="monospace">{grn.grn_number}</Text></Table.Td>
                   <Table.Td><Text size="sm" ff="monospace">{grn.po_number}</Text></Table.Td>
@@ -581,7 +595,7 @@ function InvoicesTab() {
               <Table.Th ta="center">สถานะ</Table.Th>
             </Table.Tr></Table.Thead>
             <Table.Tbody>
-              {invoices.map((inv: any) => {
+              {invoices.map((inv: Invoice) => {
                 const st = INV_STATUSES[inv.status] || INV_STATUSES.pending
                 const remaining = parseFloat(inv.total_amount) - parseFloat(inv.paid_amount)
                 return (
@@ -590,8 +604,8 @@ function InvoicesTab() {
                     <Table.Td><Text size="sm" ff="monospace" c="dimmed">{inv.tax_invoice_number || '-'}</Text></Table.Td>
                     <Table.Td><Text size="sm" ff="monospace">{inv.po_number}</Text></Table.Td>
                     <Table.Td><Text size="sm">{inv.contact_name}</Text></Table.Td>
-                    <Table.Td><Text size="sm">{fmtDate(inv.invoice_date)}</Text></Table.Td>
-                    <Table.Td><Text size="sm" c={inv.due_date && new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 'red' : undefined} fw={inv.due_date && new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 700 : undefined}>{fmtDate(inv.due_date)}</Text></Table.Td>
+                    <Table.Td><Text size="sm">{fmtDate(inv.invoice_date || '')}</Text></Table.Td>
+                    <Table.Td><Text size="sm" c={inv.due_date && new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 'red' : undefined} fw={inv.due_date && new Date(inv.due_date) < new Date() && inv.status !== 'paid' ? 700 : undefined}>{fmtDate(inv.due_date || '')}</Text></Table.Td>
                     <Table.Td ta="right" fw={600}>฿{fmt(parseFloat(inv.total_amount))}</Table.Td>
                     <Table.Td ta="right"><Text size="sm" c="green">฿{fmt(parseFloat(inv.paid_amount))}</Text></Table.Td>
                     <Table.Td ta="center"><Badge color={st.color} variant="light">{st.label}</Badge></Table.Td>
@@ -635,7 +649,7 @@ function PaymentsTab() {
               <Table.Th>อ้างอิง</Table.Th>
             </Table.Tr></Table.Thead>
             <Table.Tbody>
-              {payments.map((p: any) => (
+              {payments.map((p: PurchasePayment) => (
                 <Table.Tr key={p.id}>
                   <Table.Td><Text size="sm" fw={700} ff="monospace">{p.payment_number}</Text></Table.Td>
                   <Table.Td><Text size="sm" ff="monospace">{p.invoice_number}</Text></Table.Td>

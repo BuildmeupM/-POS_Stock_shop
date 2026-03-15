@@ -100,7 +100,7 @@ router.post('/expenses', async (req, res) => {
     await connection.beginTransaction()
 
     const {
-      vendorName, taxId, contactId, expenseDate, dueDate, paymentMethod, paymentStatus,
+      vendorName, taxId, contactId, expenseDate, dueDate, paymentMethod, paymentChannelId, paymentStatus,
       referenceNumber, taxInvoiceNumber, taxInvoiceDate, taxPeriod,
       note, status: docStatus, items
     } = req.body
@@ -200,17 +200,17 @@ router.post('/expenses', async (req, res) => {
     const firstAccountId = processedItems[0].accountId
     const [expenseResult] = await connection.execute(
       `INSERT INTO expenses (company_id, expense_number, account_id, amount, description, reference_number,
-       expense_date, due_date, payment_method, payment_status, vendor_name, contact_id, tax_id,
+       expense_date, due_date, payment_method, payment_channel_id, payment_status, vendor_name, contact_id, tax_id,
        tax_invoice_number, tax_invoice_date, tax_period,
        vat_amount, wht_amount, wht_type, status, note, created_by, journal_entry_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId, expenseNumber, firstAccountId,
         totalAmount + totalVat, // gross amount
         items.length === 1 ? processedItems[0].description : `ค่าใช้จ่าย ${items.length} รายการ`,
         referenceNumber || null,
         expenseDate, dueDate || null,
-        paymentMethod || 'cash', paymentStatus || 'paid',
+        paymentMethod || 'cash', paymentChannelId || null, paymentStatus || 'paid',
         vendorName || null, contactId || null, taxId || null,
         taxInvoiceNumber || null, taxInvoiceDate || null, taxPeriod || null,
         totalVat, totalWht, null,

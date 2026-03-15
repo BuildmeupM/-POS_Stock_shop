@@ -13,6 +13,8 @@ import {
   IconFileInvoice, IconWand
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt } from '../utils/formatters'
+import { PLATFORM_OPTIONS as platformOptions } from '../utils/constants'
 
 interface OrderItem {
   productId: string
@@ -20,22 +22,6 @@ interface OrderItem {
   unitPrice: number
   discount: number
 }
-
-const platformOptions = [
-  { value: 'facebook', label: '📘 Facebook' },
-  { value: 'line', label: '💬 LINE' },
-  { value: 'shopee', label: '🟠 Shopee' },
-  { value: 'lazada', label: '🔵 Lazada' },
-  { value: 'website', label: '🌐 Website' },
-  { value: 'other', label: '📦 อื่นๆ' },
-]
-
-const paymentOptions = [
-  { value: 'transfer', label: '🏦 โอนเงิน' },
-  { value: 'cod', label: '📦 เก็บปลายทาง (COD)' },
-  { value: 'credit_card', label: '💳 บัตรเครดิต' },
-  { value: 'qr_code', label: '📱 QR Code' },
-]
 
 const shippingProviders = [
   'ไปรษณีย์ไทย', 'Kerry', 'Flash Express', 'J&T Express',
@@ -49,6 +35,7 @@ export default function OrderCreatePage() {
   const [form, setForm] = useState({
     platform: 'facebook',
     paymentMethod: 'transfer',
+    paymentChannelId: null as number | null,
     customerName: '',
     customerPhone: '',
     addrHouseNo: '', addrVillage: '', addrStreet: '', addrSubdistrict: '', addrDistrict: '',
@@ -72,7 +59,25 @@ export default function OrderCreatePage() {
     queryFn: () => api.get('/products', { params: { active: 'true' } }).then(r => r.data),
   })
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
+  const { data: walletChannels = [] } = useQuery({
+    queryKey: ['wallet-channels-active'],
+    queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
+    staleTime: 1000 * 60 * 5,
+  })
+
+  const paymentChannelOptions = walletChannels.length > 0
+    ? walletChannels.map((ch: any) => ({
+        value: String(ch.id),
+        label: `${ch.type === 'cash' ? '💵' : ch.type === 'bank_account' ? '🏦' : ch.type === 'promptpay' ? '📱' : ch.type === 'credit_card' ? '💳' : ch.type === 'e_wallet' ? '👛' : '📋'} ${ch.name}`,
+      }))
+    : [
+        { value: '_transfer', label: '🏦 โอนเงิน' },
+        { value: '_cod', label: '📦 เก็บปลายทาง (COD)' },
+        { value: '_credit_card', label: '💳 บัตรเครดิต' },
+        { value: '_qr_code', label: '📱 QR Code' },
+      ]
+
+
 
   // Address
   const buildAddress = () => {
@@ -192,6 +197,7 @@ export default function OrderCreatePage() {
     }
     createMutation.mutate({
       ...form,
+      paymentChannelId: form.paymentChannelId || undefined,
       shippingAddress: buildAddress(),
       shippingCost: form.shippingCost,
       discountAmount: form.discountAmount,
@@ -239,8 +245,17 @@ export default function OrderCreatePage() {
             <SimpleGrid cols={3}>
               <Select label="ช่องทาง" size="sm" required data={platformOptions}
                 value={form.platform} onChange={(v) => setForm({ ...form, platform: v || 'facebook' })} />
-              <Select label="การชำระเงิน" size="sm" data={paymentOptions}
-                value={form.paymentMethod} onChange={(v) => setForm({ ...form, paymentMethod: v || 'transfer' })} />
+              <Select label="การชำระเงิน" size="sm" data={paymentChannelOptions}
+                value={form.paymentChannelId ? String(form.paymentChannelId) : (walletChannels.length > 0 ? null : '_transfer')}
+                onChange={(v) => {
+                  if (v && !v.startsWith('_')) {
+                    const ch = walletChannels.find((c: any) => String(c.id) === v)
+                    setForm({ ...form, paymentChannelId: Number(v), paymentMethod: ch?.type === 'bank_account' ? 'transfer' : ch?.type === 'promptpay' ? 'qr_code' : ch?.type || 'transfer' })
+                  } else {
+                    const method = v ? v.replace('_', '') : 'transfer'
+                    setForm({ ...form, paymentChannelId: null, paymentMethod: method })
+                  }
+                }} />
               <Select label="ขนส่ง" size="sm" clearable placeholder="เลือกขนส่ง"
                 data={shippingProviders}
                 value={form.shippingProvider} onChange={(v) => setForm({ ...form, shippingProvider: v || '' })} />

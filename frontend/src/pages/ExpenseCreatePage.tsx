@@ -11,6 +11,7 @@ import {
   IconFileInvoice, IconChevronDown, IconChevronUp
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt } from '../utils/formatters'
 
 // --- Types ---
 interface ExpenseItem {
@@ -77,7 +78,7 @@ export default function ExpenseCreatePage() {
   const [items, setItems] = useState<ExpenseItem[]>([emptyItem()])
   const [header, setHeader] = useState({
     vendorName: '', taxId: '', contactId: '', expenseDate: new Date().toISOString().split('T')[0],
-    dueDate: '', paymentMethod: 'cash', paymentStatus: 'paid',
+    dueDate: '', paymentMethod: 'cash', paymentChannelId: null as number | null, paymentStatus: 'paid',
     referenceNumber: '', note: '',
   })
   const [taxInvoice, setTaxInvoice] = useState({ number: '', date: '', period: '' })
@@ -92,6 +93,23 @@ export default function ExpenseCreatePage() {
     queryKey: ['contacts'],
     queryFn: () => api.get('/contacts', { params: { type: 'vendor' } }).then(r => r.data),
   })
+
+  const { data: walletChannels = [] } = useQuery({
+    queryKey: ['wallet-channels-active'],
+    queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
+    staleTime: 1000 * 60 * 5,
+  })
+
+  const payChannelOptions = walletChannels.length > 0
+    ? walletChannels.map((ch: any) => ({
+        value: String(ch.id),
+        label: `${ch.type === 'cash' ? '💵' : ch.type === 'bank_account' ? '🏦' : ch.type === 'promptpay' ? '📱' : ch.type === 'credit_card' ? '💳' : '📋'} ${ch.name}`,
+      }))
+    : [
+        { value: '_cash', label: '💵 เงินสด' },
+        { value: '_transfer', label: '🏦 โอนเงิน' },
+        { value: '_credit_card', label: '💳 บัตรเครดิต' },
+      ]
 
   const contactOptions = (contacts || []).map((c: any) => ({
     value: String(c.id),
@@ -109,7 +127,7 @@ export default function ExpenseCreatePage() {
     },
   })
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
+
   const expenseAccounts = accounts?.filter((a: any) => a.account_type === 'expense') || []
 
   const updateItem = useCallback((idx: number, field: string, value: any) => {
@@ -137,6 +155,7 @@ export default function ExpenseCreatePage() {
     }
     createMutation.mutate({
       ...header,
+      paymentChannelId: header.paymentChannelId || undefined,
       taxInvoiceNumber: taxInvoice.number || null,
       taxInvoiceDate: taxInvoice.date || null,
       taxPeriod: taxInvoice.period || null,
@@ -332,11 +351,17 @@ export default function ExpenseCreatePage() {
       <div className="stat-card">
         <Text fw={700} mb="md" size="sm" c="dimmed">การชำระเงิน</Text>
         <Group grow>
-          <Select label="ช่องทางชำระ" data={[
-            { value: 'cash', label: '💵 เงินสด' },
-            { value: 'transfer', label: '🏦 โอนเงิน' },
-            { value: 'credit_card', label: '💳 บัตรเครดิต' },
-          ]} value={header.paymentMethod} onChange={(v) => setHeader({ ...header, paymentMethod: v || 'cash' })} />
+          <Select label="ช่องทางชำระ" data={payChannelOptions}
+            value={header.paymentChannelId ? String(header.paymentChannelId) : (walletChannels.length > 0 ? null : '_cash')}
+            onChange={(v) => {
+              if (v && !v.startsWith('_')) {
+                const ch = walletChannels.find((c: any) => String(c.id) === v)
+                setHeader({ ...header, paymentChannelId: Number(v), paymentMethod: ch?.type === 'bank_account' ? 'transfer' : ch?.type || 'cash' })
+              } else {
+                const method = v ? v.replace('_', '') : 'cash'
+                setHeader({ ...header, paymentChannelId: null, paymentMethod: method })
+              }
+            }} />
           <Select label="สถานะการชำระ" data={[
             { value: 'paid', label: '✅ จ่ายแล้ว' },
             { value: 'unpaid', label: '⏳ ยังไม่จ่าย (เชื่อ)' },

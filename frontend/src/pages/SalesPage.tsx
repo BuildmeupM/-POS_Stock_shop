@@ -12,10 +12,12 @@ import {
   IconCalendar, IconFileInvoice, IconTrendingUp, IconAlertTriangle
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt, fmtDateTime as fmtDate } from '../utils/formatters'
+import type { Sale, SaleItem, SalePayment, SalesQueryParams } from '../types'
 
 const PAGE_SIZE = 15
 
-const paymentIcons: Record<string, any> = {
+const paymentIcons: Record<string, { icon: any; label: string; color: string }> = {
   cash: { icon: IconCash, label: 'เงินสด', color: '#059669' },
   transfer: { icon: IconBuildingBank, label: 'โอนเงิน', color: '#2563eb' },
   credit_card: { icon: IconCreditCard, label: 'บัตรเครดิต', color: '#7c3aed' },
@@ -43,16 +45,13 @@ export default function SalesPage() {
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const [voidSaleId, setVoidSaleId] = useState<number | null>(null)
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
-  const fmtDate = (d: string) => new Date(d).toLocaleDateString('th-TH', {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  })
+
 
   // === Data Queries ===
   const { data: sales = [], isLoading } = useQuery({
     queryKey: ['sales', dateFrom, dateTo, filterStatus, filterType],
     queryFn: () => {
-      const params: any = {}
+      const params: SalesQueryParams = {}
       if (dateFrom) params.from = dateFrom.toISOString().split('T')[0]
       if (dateTo) params.to = dateTo.toISOString().split('T')[0] + ' 23:59:59'
       if (filterStatus) params.status = filterStatus
@@ -86,14 +85,14 @@ export default function SalesPage() {
     let result = sales
     if (search) {
       const s = search.toLowerCase()
-      result = result.filter((r: any) =>
+      result = result.filter((r: Sale) =>
         r.invoice_number?.toLowerCase().includes(s) ||
         r.customer_name?.toLowerCase().includes(s) ||
         r.cashier_name?.toLowerCase().includes(s)
       )
     }
     if (filterPayment) {
-      result = result.filter((r: any) => r.payment_method === filterPayment)
+      result = result.filter((r: Sale) => r.payment_method === filterPayment)
     }
     return result
   }, [sales, search, filterPayment])
@@ -106,20 +105,20 @@ export default function SalesPage() {
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
 
   const stats = useMemo(() => {
-    const completed = sales.filter((s: any) => s.status !== 'voided')
-    const todaySales = completed.filter((s: any) => s.sold_at?.startsWith(today))
-    const monthSales = completed.filter((s: any) => s.sold_at >= monthStart)
-    const voided = sales.filter((s: any) => s.status === 'voided')
+    const completed = sales.filter((s: Sale) => s.status !== 'voided')
+    const todaySales = completed.filter((s: Sale) => s.sold_at?.startsWith(today))
+    const monthSales = completed.filter((s: Sale) => s.sold_at >= monthStart)
+    const voided = sales.filter((s: Sale) => s.status === 'voided')
 
     return {
-      todayTotal: todaySales.reduce((s: number, r: any) => s + parseFloat(r.net_amount || 0), 0),
+      todayTotal: todaySales.reduce((s: number, r: Sale) => s + parseFloat(r.net_amount || '0'), 0),
       todayCount: todaySales.length,
-      monthTotal: monthSales.reduce((s: number, r: any) => s + parseFloat(r.net_amount || 0), 0),
+      monthTotal: monthSales.reduce((s: number, r: Sale) => s + parseFloat(r.net_amount || '0'), 0),
       monthCount: monthSales.length,
       avgOrder: completed.length > 0
-        ? completed.reduce((s: number, r: any) => s + parseFloat(r.net_amount || 0), 0) / completed.length : 0,
+        ? completed.reduce((s: number, r: Sale) => s + parseFloat(r.net_amount || '0'), 0) / completed.length : 0,
       voidedCount: voided.length,
-      voidedTotal: voided.reduce((s: number, r: any) => s + parseFloat(r.net_amount || 0), 0),
+      voidedTotal: voided.reduce((s: number, r: Sale) => s + parseFloat(r.net_amount || '0'), 0),
     }
   }, [sales, today, monthStart])
 
@@ -236,7 +235,7 @@ export default function SalesPage() {
                     </Table.Td>
                   </Table.Tr>
                 ) : (
-                  paginated.map((sale: any) => {
+                  paginated.map((sale: Sale) => {
                     const st = statusBadge[sale.status] || statusBadge.completed
                     return (
                       <Table.Tr key={sale.id} style={{ cursor: 'pointer' }}
@@ -344,7 +343,7 @@ export default function SalesPage() {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {saleDetail.items?.map((item: any) => (
+                {saleDetail.items?.map((item: SaleItem) => (
                   <Table.Tr key={item.id}>
                     <Table.Td>
                       <Text size="sm" fw={500}>{item.product_name}</Text>
@@ -396,7 +395,7 @@ export default function SalesPage() {
             {saleDetail.payments?.length > 0 && (
               <>
                 <Text fw={600} size="sm">การชำระเงิน</Text>
-                {saleDetail.payments.map((p: any) => (
+                {saleDetail.payments.map((p: SalePayment) => (
                   <Group key={p.id} justify="space-between" px="sm">
                     <PaymentBadge method={p.method} />
                     <Text fw={600}>฿{fmt(parseFloat(p.amount))}</Text>

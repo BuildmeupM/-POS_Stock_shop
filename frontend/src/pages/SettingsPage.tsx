@@ -74,7 +74,7 @@ export default function SettingsPage() {
   }, [company])
 
   const updateMutation = useMutation({
-    mutationFn: (data: any) => api.put(`/companies/${company.id}`, data),
+    mutationFn: (data: Record<string, unknown>) => api.put(`/companies/${company.id}`, data),
     onSuccess: () => {
       notifications.show({
         title: '✅ บันทึกสำเร็จ',

@@ -9,6 +9,7 @@ import {
   IconSearch, IconFilterOff, IconFileInvoice, IconEye
 } from '@tabler/icons-react'
 import api from '../services/api'
+import { fmt, fmtDateTime as fmtDate } from '../utils/formatters'
 
 const PAGE_SIZE = 15
 
@@ -17,10 +18,7 @@ export default function CreditNotesPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
 
-  const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
-  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('th-TH', {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-  }) : '-'
+
 
   const { data: creditNotes = [], isLoading } = useQuery({
     queryKey: ['credit-notes'],

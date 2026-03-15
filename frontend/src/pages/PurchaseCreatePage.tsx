@@ -10,8 +10,7 @@ import {
   IconPlus, IconTrash, IconArrowLeft, IconDeviceFloppy, IconCheck
 } from '@tabler/icons-react'
 import api from '../services/api'
-
-const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
+import { fmt } from '../utils/formatters'
 
 export default function PurchaseCreatePage() {
   const navigate = useNavigate()

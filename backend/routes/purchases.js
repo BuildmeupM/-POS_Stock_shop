@@ -631,7 +631,7 @@ router.post('/payments', async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
-    const { invoiceId, paymentDate, amount, paymentMethod, referenceNumber, bankName, note } = req.body
+    const { invoiceId, paymentDate, amount, paymentMethod, referenceNumber, bankName, note, paymentChannelId } = req.body
 
     if (!invoiceId || !amount || amount <= 0) {
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบ' })
@@ -653,11 +653,11 @@ router.post('/payments', async (req, res) => {
 
     // Create payment
     await connection.execute(
-      `INSERT INTO purchase_payments (company_id, payment_number, invoice_id, payment_date, amount, payment_method, reference_number, bank_name, note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO purchase_payments (company_id, payment_number, invoice_id, payment_date, amount, payment_method, payment_channel_id, reference_number, bank_name, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [req.user.companyId, paymentNumber, invoiceId,
        paymentDate || new Date().toISOString().slice(0, 10),
-       amount, paymentMethod || 'transfer',
+       amount, paymentMethod || 'transfer', paymentChannelId || null,
        referenceNumber || null, bankName || null, note || null, req.user.id]
     )
 

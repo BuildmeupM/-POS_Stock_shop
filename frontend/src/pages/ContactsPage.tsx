@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Group, Stack, TextInput, Text, Badge, Loader,
@@ -18,16 +19,24 @@ const typeLabels: Record<string, { label: string; color: string }> = {
 }
 
 export default function ContactsPage() {
+  const [searchParams] = useSearchParams()
+  const urlType = searchParams.get('type') || ''
+
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState<number | null>(null)
   const [searchText, setSearchText] = useState('')
-  const [filterType, setFilterType] = useState('')
+  const [filterType, setFilterType] = useState(urlType)
   const [form, setForm] = useState({
-    name: '', contactType: 'vendor', taxId: '', phone: '', email: '',
+    name: '', contactType: urlType || 'vendor', taxId: '', phone: '', email: '',
     address: '', addressStreet: '', addressSubdistrict: '', addressDistrict: '', addressProvince: '', addressPostalCode: '',
     branch: '', bankAccount: '', bankName: '', note: ''
   })
   const [addressMode, setAddressMode] = useState<'combined' | 'separated'>('combined')
+
+  // Sync filter with URL param when navigating via sidebar
+  useEffect(() => {
+    setFilterType(urlType)
+  }, [urlType])
 
   const queryClient = useQueryClient()
 
