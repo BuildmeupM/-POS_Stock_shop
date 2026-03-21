@@ -9,7 +9,7 @@ import { notifications } from '@mantine/notifications'
 import {
   IconSearch, IconPlus, IconPackageImport, IconPackageExport, IconEdit, IconTrash,
   IconPackage, IconAlertTriangle, IconPackageOff, IconChecks, IconArrowDown, IconArrowUp,
-  IconHistory, IconFilter
+  IconHistory, IconFilter, IconChevronRight, IconChevronDown, IconTags, IconList
 } from '@tabler/icons-react'
 import api from '../services/api'
 
@@ -36,7 +36,7 @@ export default function StockPage() {
   const [activeTab, setActiveTab] = useState<'products' | 'movement'>('products')
 
   return (
-    <Stack gap="lg">
+    <Stack gap="lg" className="stock-page-root">
       <Group justify="space-between" align="center">
         <Text size="xl" fw={800}>📦 สต๊อกสินค้า</Text>
         <div className="stock-tabs">
@@ -61,14 +61,16 @@ export default function StockPage() {
    ==================================================================== */
 function ProductsTab() {
   const [search, setSearch] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const [stockFilter, setStockFilter] = useState<string | null>(null)
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
+  const [selectedValueId, setSelectedValueId] = useState<number | null>(null)
+  const [expandedGroups, setExpandedGroups] = useState<Record<number, boolean>>({})
   const [addModal, setAddModal] = useState(false)
   const [editModal, setEditModal] = useState(false)
   const [receiveModal, setReceiveModal] = useState(false)
   const [deleteModal, setDeleteModal] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<any>(null)
-  const emptyForm = { sku: '', barcode: '', name: '', description: '', categoryId: '', unit: 'ชิ้น', costPrice: 0, sellingPrice: 0, minStock: 0 }
+  const emptyForm = { sku: '', barcode: '', name: '', description: '', categoryId: '', unit: 'ชิ้น', costPrice: 0, sellingPrice: 0, minSellingPrice: 0, minStock: 0, attributes: [] as { groupId: number; valueId: number }[] }
   const [form, setForm] = useState(emptyForm)
   const [receiveForm, setReceiveForm] = useState({ quantity: 0, costPerUnit: 0, sellingPrice: 0, note: '' })
   const queryClient = useQueryClient()
@@ -87,6 +89,18 @@ function ProductsTab() {
     queryKey: ['warehouses'],
     queryFn: () => api.get('/inventory/warehouses').then(r => r.data),
   })
+
+  const { data: attributeGroups } = useQuery({
+    queryKey: ['attribute-groups'],
+    queryFn: () => api.get('/products/attribute-groups').then(r => r.data),
+  })
+
+  const { data: company } = useQuery({
+    queryKey: ['company-current'],
+    queryFn: () => api.get('/companies/current').then(r => r.data),
+  })
+
+  const unitOptions: string[] = (company?.settings?.units) || ['ชิ้น', 'กล่อง', 'แพ็ค', 'ขวด', 'ถุง']
 
   // --- Mutations ---
   const addMutation = useMutation({
@@ -129,14 +143,30 @@ function ProductsTab() {
     onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับเข้าได้', color: 'red' }),
   })
 
+  // --- Count products per attribute value ---
+  const valueCounts = useMemo(() => {
+    const counts: Record<number, number> = {}
+    for (const p of (products || [])) {
+      for (const a of (p.attributes || [])) {
+        counts[a.valueId] = (counts[a.valueId] || 0) + 1
+      }
+    }
+    return counts
+  }, [products])
+
   // --- Filtered & computed ---
   const filtered = useMemo(() => {
     let list = products || []
-    if (categoryFilter) list = list.filter((p: any) => String(p.category_id) === categoryFilter)
     if (stockFilter === 'low') list = list.filter((p: any) => parseInt(p.total_stock) > 0 && parseInt(p.total_stock) <= p.min_stock)
     if (stockFilter === 'out') list = list.filter((p: any) => parseInt(p.total_stock) <= 0)
+    // Filter by selected sidebar value
+    if (selectedValueId) {
+      list = list.filter((p: any) =>
+        (p.attributes || []).some((a: any) => a.valueId === selectedValueId)
+      )
+    }
     return list
-  }, [products, categoryFilter, stockFilter])
+  }, [products, stockFilter, selectedValueId])
 
   const stats = useMemo(() => {
     const all = products || []
@@ -155,7 +185,9 @@ function ProductsTab() {
     setForm({
       sku: p.sku, barcode: p.barcode || '', name: p.name, description: p.description || '',
       categoryId: p.category_id ? String(p.category_id) : '', unit: p.unit || 'ชิ้น',
-      costPrice: parseFloat(p.cost_price), sellingPrice: parseFloat(p.selling_price), minStock: p.min_stock,
+      costPrice: parseFloat(p.cost_price), sellingPrice: parseFloat(p.selling_price),
+      minSellingPrice: parseFloat(p.min_selling_price) || 0, minStock: p.min_stock,
+      attributes: (p.attributes || []).map((a: any) => ({ groupId: a.groupId, valueId: a.valueId })),
     })
     setEditModal(true)
   }
@@ -172,13 +204,43 @@ function ProductsTab() {
     return Math.min(100, Math.max(0, pct))
   }
 
+  const toggleGroup = (gId: number) => {
+    setExpandedGroups(prev => ({ ...prev, [gId]: !prev[gId] }))
+  }
+
+  const selectValue = (groupId: number, valueId: number) => {
+    if (selectedValueId === valueId) {
+      setSelectedValueId(null)
+      setSelectedGroupId(null)
+    } else {
+      setSelectedValueId(valueId)
+      setSelectedGroupId(groupId)
+    }
+  }
+
+  const clearSidebarFilter = () => {
+    setSelectedGroupId(null)
+    setSelectedValueId(null)
+  }
+
+  // Find active label for breadcrumb
+  const activeGroupLabel = useMemo(() => {
+    if (!selectedGroupId || !attributeGroups) return ''
+    const g = (attributeGroups as any[]).find((g: any) => g.id === selectedGroupId)
+    if (!g) return ''
+    const v = (g.values || []).find((v: any) => v.id === selectedValueId)
+    return v ? `${g.name}: ${v.value}` : ''
+  }, [selectedGroupId, selectedValueId, attributeGroups])
+
   if (isLoading) return <Loader style={{ margin: '40px auto', display: 'block' }} />
 
+  const GROUP_COLORS = ['blue', 'green', 'violet', 'orange', 'cyan', 'pink', 'teal', 'indigo']
+
   return (
-    <>
+    <div className="stock-products-wrap">
       {/* Summary Cards */}
       <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="md">
-        <div className="stat-card" onClick={() => setStockFilter(null)} style={{ cursor: 'pointer' }}>
+        <div className="stat-card" onClick={() => { setStockFilter(null); clearSidebarFilter() }} style={{ cursor: 'pointer' }}>
           <Group gap={10}>
             <div className="stat-card-icon" style={{ background: 'rgba(79,70,229,0.1)' }}>
               <IconPackage size={20} color="#4f46e5" />
@@ -189,7 +251,7 @@ function ProductsTab() {
             </div>
           </Group>
         </div>
-        <div className="stat-card" onClick={() => setStockFilter(null)} style={{ cursor: 'pointer' }}>
+        <div className="stat-card" onClick={() => { setStockFilter(null); clearSidebarFilter() }} style={{ cursor: 'pointer' }}>
           <Group gap={10}>
             <div className="stat-card-icon" style={{ background: 'rgba(5,150,105,0.1)' }}>
               <IconChecks size={20} color="#059669" />
@@ -200,7 +262,7 @@ function ProductsTab() {
             </div>
           </Group>
         </div>
-        <div className="stat-card" onClick={() => setStockFilter('low')} style={{ cursor: 'pointer' }}>
+        <div className="stat-card" onClick={() => { setStockFilter('low'); clearSidebarFilter() }} style={{ cursor: 'pointer' }}>
           <Group gap={10}>
             <div className="stat-card-icon" style={{ background: 'rgba(217,119,6,0.1)' }}>
               <IconAlertTriangle size={20} color="#d97706" />
@@ -211,7 +273,7 @@ function ProductsTab() {
             </div>
           </Group>
         </div>
-        <div className="stat-card" onClick={() => setStockFilter('out')} style={{ cursor: 'pointer' }}>
+        <div className="stat-card" onClick={() => { setStockFilter('out'); clearSidebarFilter() }} style={{ cursor: 'pointer' }}>
           <Group gap={10}>
             <div className="stat-card-icon" style={{ background: 'rgba(220,38,38,0.1)' }}>
               <IconPackageOff size={20} color="#dc2626" />
@@ -224,117 +286,207 @@ function ProductsTab() {
         </div>
       </SimpleGrid>
 
-      {/* Filters */}
-      <div className="stock-filter-bar">
-        <TextInput placeholder="ค้นหาสินค้า (ชื่อ, SKU, Barcode)..." leftSection={<IconSearch size={16} />}
-          value={search} onChange={(e) => setSearch(e.target.value)} />
-        <Select placeholder="หมวดหมู่ทั้งหมด" data={categoryOptions} value={categoryFilter}
-          onChange={setCategoryFilter} clearable leftSection={<IconFilter size={14} />} />
-        <Select placeholder="สถานะสต๊อก" data={[
-          { value: 'low', label: '⚠️ ใกล้หมด' },
-          { value: 'out', label: '🔴 หมดสต๊อก' },
-        ]} value={stockFilter} onChange={setStockFilter} clearable />
-        <Button leftSection={<IconPlus size={16} />} onClick={() => { setForm(emptyForm); setAddModal(true) }}>
-          เพิ่มสินค้า
-        </Button>
-      </div>
-
-      {/* Products Table */}
-      {filtered.length === 0 ? (
-        <div className="stat-card">
-          <div className="empty-state">
-            <IconPackage size={48} />
-            <Text fw={600} size="lg">ไม่พบสินค้า</Text>
-            <Text size="sm" c="dimmed">ยังไม่มีสินค้าในระบบ หรือไม่ตรงกับตัวกรอง</Text>
+      {/* Two-panel Layout */}
+      <div className="stock-two-panel">
+        {/* === LEFT: Sidebar Tree === */}
+        <div className="stock-sidebar">
+          <div className="stock-sidebar-header">
+            <IconTags size={16} />
+            <Text size="sm" fw={700}>กลุ่มคุณสมบัติ</Text>
           </div>
-        </div>
-      ) : (
-        <div className="stat-card" style={{ padding: 0, overflow: 'auto' }}>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>SKU</Table.Th>
-                <Table.Th>ชื่อสินค้า</Table.Th>
-                <Table.Th>หมวดหมู่</Table.Th>
-                <Table.Th ta="center">คงเหลือ</Table.Th>
-                <Table.Th ta="right">ราคาทุน</Table.Th>
-                <Table.Th ta="right">ราคาขาย</Table.Th>
-                <Table.Th ta="right">Margin</Table.Th>
-                <Table.Th ta="center">จัดการ</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {filtered.map((p: any) => {
-                const stock = parseInt(p.total_stock) || 0
-                const cost = parseFloat(p.cost_price) || 0
-                const sell = parseFloat(p.selling_price) || 0
-                const margin = sell > 0 ? ((sell - cost) / sell * 100) : 0
-                const level = getStockLevel(stock, p.min_stock)
 
-                return (
-                  <Table.Tr key={p.id}>
-                    <Table.Td><Text size="sm" fw={600} ff="monospace">{p.sku}</Text></Table.Td>
-                    <Table.Td>
-                      <Text size="sm" fw={500}>{p.name}</Text>
-                      {p.barcode && <Text size="xs" c="dimmed">Barcode: {p.barcode}</Text>}
-                    </Table.Td>
-                    <Table.Td>
-                      {p.category_name ? (
-                        <Badge variant="light" size="sm">{p.category_name}</Badge>
-                      ) : (
-                        <Text size="xs" c="dimmed">-</Text>
-                      )}
-                    </Table.Td>
-                    <Table.Td ta="center">
-                      <Badge color={level === 'good' ? 'green' : level === 'warning' ? 'yellow' : 'red'}
-                        variant="light" size="sm">
-                        {stock} {p.unit}
+          {/* All products */}
+          <button className={`stock-sidebar-item stock-sidebar-all ${!selectedValueId && !stockFilter ? 'active' : ''}`}
+            onClick={() => { clearSidebarFilter(); setStockFilter(null) }}>
+            <Group gap={8}>
+              <IconList size={15} />
+              <Text size="sm" fw={500}>สินค้าทั้งหมด</Text>
+            </Group>
+            <Badge size="sm" variant="light" color="gray" radius="xl">{(products || []).length}</Badge>
+          </button>
+
+          {/* Attribute Groups Tree */}
+          {(attributeGroups || []).map((g: any, gi: number) => {
+            const color = GROUP_COLORS[gi % GROUP_COLORS.length]
+            const isExpanded = expandedGroups[g.id] !== false
+            const values: any[] = g.values || []
+            return (
+              <div key={g.id} className="stock-sidebar-group">
+                <button className="stock-sidebar-item stock-sidebar-group-header"
+                  onClick={() => toggleGroup(g.id)}>
+                  <Group gap={6}>
+                    {isExpanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+                    <Text size="sm" fw={600} c={color}>{g.name}</Text>
+                  </Group>
+                  <Badge size="sm" variant="light" color={color} radius="xl">{values.length}</Badge>
+                </button>
+                {isExpanded && values.map((v: any) => {
+                  const count = valueCounts[v.id] || 0
+                  const isActive = selectedValueId === v.id
+                  return (
+                    <button key={v.id}
+                      className={`stock-sidebar-item stock-sidebar-value ${isActive ? 'active' : ''}`}
+                      onClick={() => { selectValue(g.id, v.id); setStockFilter(null) }}>
+                      <Text size="sm" truncate>{v.value}</Text>
+                      <Badge size="xs" variant={isActive ? 'filled' : 'light'} color={isActive ? color : 'gray'} radius="xl">
+                        {count}
                       </Badge>
-                      <div className="stock-indicator">
-                        <div className={`stock-indicator-fill ${level}`}
-                          style={{ width: `${getStockPercent(stock, p.min_stock)}%` }} />
-                      </div>
-                    </Table.Td>
-                    <Table.Td ta="right">฿{fmt(cost)}</Table.Td>
-                    <Table.Td ta="right" fw={600}>฿{fmt(sell)}</Table.Td>
-                    <Table.Td ta="right">
-                      <Badge color={margin >= 30 ? 'green' : margin >= 15 ? 'yellow' : 'red'}
-                        variant="light" size="sm">
-                        {margin.toFixed(1)}%
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td ta="center">
-                      <Group gap={4} justify="center">
-                        <Tooltip label="รับเข้าสต๊อก">
-                          <ActionIcon size="sm" variant="light" color="green"
-                            onClick={() => { setSelectedProduct(p); setReceiveForm({ quantity: 0, costPerUnit: cost, sellingPrice: sell, note: '' }); setReceiveModal(true) }}>
-                            <IconPackageImport size={14} />
-                          </ActionIcon>
-                        </Tooltip>
-                        <Tooltip label="แก้ไข">
-                          <ActionIcon size="sm" variant="light" color="blue" onClick={() => openEdit(p)}>
-                            <IconEdit size={14} />
-                          </ActionIcon>
-                        </Tooltip>
-                        <Tooltip label="ลบ">
-                          <ActionIcon size="sm" variant="light" color="red"
-                            onClick={() => { setSelectedProduct(p); setDeleteModal(true) }}>
-                            <IconTrash size={14} />
-                          </ActionIcon>
-                        </Tooltip>
-                      </Group>
-                    </Table.Td>
-                  </Table.Tr>
-                )
-              })}
-            </Table.Tbody>
-          </Table>
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })}
         </div>
-      )}
+
+        {/* === RIGHT: Product List === */}
+        <div className="stock-main">
+          {/* Top bar: search + actions */}
+          <div className="stock-main-topbar">
+            <div className="stock-main-topbar-left">
+              <TextInput placeholder="ค้นหาสินค้า (ชื่อ, SKU, Barcode)..." leftSection={<IconSearch size={16} />}
+                value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+              <Select placeholder="สถานะสต๊อก" data={[
+                { value: 'low', label: '⚠️ ใกล้หมด' },
+                { value: 'out', label: '🔴 หมดสต๊อก' },
+              ]} value={stockFilter} onChange={setStockFilter} clearable size="sm" style={{ minWidth: 140 }} />
+            </div>
+            <Button leftSection={<IconPlus size={16} />} onClick={() => { setForm(emptyForm); setAddModal(true) }}>
+              เพิ่มสินค้า
+            </Button>
+          </div>
+
+          {/* Active filter breadcrumb */}
+          {activeGroupLabel && (
+            <div className="stock-active-filter">
+              <Group gap={6}>
+                <IconFilter size={14} />
+                <Text size="sm" fw={500}>{activeGroupLabel}</Text>
+                <Badge size="sm" variant="light">{filtered.length} รายการ</Badge>
+              </Group>
+              <Button size="xs" variant="subtle" color="gray" onClick={clearSidebarFilter}>ล้างตัวกรอง</Button>
+            </div>
+          )}
+
+          {/* Products Table */}
+          {filtered.length === 0 ? (
+            <div className="stat-card">
+              <div className="empty-state">
+                <IconPackage size={48} />
+                <Text fw={600} size="lg">ไม่พบสินค้า</Text>
+                <Text size="sm" c="dimmed">ยังไม่มีสินค้าในระบบ หรือไม่ตรงกับตัวกรอง</Text>
+              </div>
+            </div>
+          ) : (
+            <div className="stat-card" style={{ padding: 0, overflow: 'auto' }}>
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>SKU</Table.Th>
+                    <Table.Th>Barcode</Table.Th>
+                    <Table.Th>ชื่อสินค้า</Table.Th>
+                    <Table.Th>คุณสมบัติ</Table.Th>
+                    <Table.Th ta="center">คงเหลือ</Table.Th>
+                    <Table.Th ta="right">ราคาทุน</Table.Th>
+                    <Table.Th ta="right">ราคาขาย</Table.Th>
+                    <Table.Th ta="right">ราคาขายต่ำสุด</Table.Th>
+                    <Table.Th ta="right">Margin</Table.Th>
+                    <Table.Th ta="center">จัดการ</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {filtered.map((p: any) => {
+                    const stock = parseInt(p.total_stock) || 0
+                    const cost = parseFloat(p.cost_price) || 0
+                    const sell = parseFloat(p.selling_price) || 0
+                    const minSell = parseFloat(p.min_selling_price) || 0
+                    const margin = sell > 0 ? ((sell - cost) / sell * 100) : 0
+                    const level = getStockLevel(stock, p.min_stock)
+
+                    return (
+                      <Table.Tr key={p.id}>
+                        <Table.Td><Text size="sm" fw={600} ff="monospace">{p.sku}</Text></Table.Td>
+                        <Table.Td><Text size="sm" ff="monospace" c="dimmed">{p.barcode || '-'}</Text></Table.Td>
+                        <Table.Td><Text size="sm" fw={500}>{p.name}</Text></Table.Td>
+                        <Table.Td>
+                          {(p.attributes && p.attributes.length > 0) ? (
+                            <Group gap={4} wrap="wrap">
+                              {p.attributes.map((a: any, i: number) => (
+                                <Tooltip key={i} label={a.groupName}>
+                                  <Badge variant="light" size="sm" color={
+                                    GROUP_COLORS[i % GROUP_COLORS.length]
+                                  }>
+                                    {a.valueName}
+                                  </Badge>
+                                </Tooltip>
+                              ))}
+                            </Group>
+                          ) : p.category_name ? (
+                            <Badge variant="light" size="sm">{p.category_name}</Badge>
+                          ) : (
+                            <Text size="xs" c="dimmed">-</Text>
+                          )}
+                        </Table.Td>
+                        <Table.Td ta="center">
+                          <Badge color={level === 'good' ? 'green' : level === 'warning' ? 'yellow' : 'red'}
+                            variant="light" size="sm">
+                            {stock} {p.unit}
+                          </Badge>
+                          <div className="stock-indicator">
+                            <div className={`stock-indicator-fill ${level}`}
+                              style={{ width: `${getStockPercent(stock, p.min_stock)}%` }} />
+                          </div>
+                        </Table.Td>
+                        <Table.Td ta="right">฿{fmt(cost)}</Table.Td>
+                        <Table.Td ta="right" fw={600}>฿{fmt(sell)}</Table.Td>
+                        <Table.Td ta="right">
+                          {minSell > 0 ? (
+                            <Text size="sm" c="orange" fw={500}>฿{fmt(minSell)}</Text>
+                          ) : (
+                            <Text size="xs" c="dimmed">-</Text>
+                          )}
+                        </Table.Td>
+                        <Table.Td ta="right">
+                          <Badge color={margin >= 30 ? 'green' : margin >= 15 ? 'yellow' : 'red'}
+                            variant="light" size="sm">
+                            {margin.toFixed(1)}%
+                          </Badge>
+                        </Table.Td>
+                        <Table.Td ta="center">
+                          <Group gap={4} justify="center">
+                            <Tooltip label="รับเข้าสต๊อก">
+                              <ActionIcon size="sm" variant="light" color="green"
+                                onClick={() => { setSelectedProduct(p); setReceiveForm({ quantity: 0, costPerUnit: cost, sellingPrice: sell, note: '' }); setReceiveModal(true) }}>
+                                <IconPackageImport size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                            <Tooltip label="แก้ไข">
+                              <ActionIcon size="sm" variant="light" color="blue" onClick={() => openEdit(p)}>
+                                <IconEdit size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                            <Tooltip label="ลบ">
+                              <ActionIcon size="sm" variant="light" color="red"
+                                onClick={() => { setSelectedProduct(p); setDeleteModal(true) }}>
+                                <IconTrash size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                          </Group>
+                        </Table.Td>
+                      </Table.Tr>
+                    )
+                  })}
+                </Table.Tbody>
+              </Table>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Add Product Modal */}
       <Modal opened={addModal} onClose={() => setAddModal(false)} title="➕ เพิ่มสินค้าใหม่" size="lg">
         <ProductForm form={form} setForm={setForm} categories={categoryOptions}
+          attributeGroups={attributeGroups || []} unitOptions={unitOptions}
           loading={addMutation.isPending}
           onSubmit={() => addMutation.mutate(form)} submitLabel="เพิ่มสินค้า" />
       </Modal>
@@ -342,6 +494,7 @@ function ProductsTab() {
       {/* Edit Product Modal */}
       <Modal opened={editModal} onClose={() => setEditModal(false)} title={`✏️ แก้ไข: ${selectedProduct?.name}`} size="lg">
         <ProductForm form={form} setForm={setForm} categories={categoryOptions}
+          attributeGroups={attributeGroups || []} unitOptions={unitOptions}
           loading={editMutation.isPending}
           onSubmit={() => editMutation.mutate({ id: selectedProduct?.id, ...form })} submitLabel="บันทึกการแก้ไข" color="blue" />
       </Modal>
@@ -359,7 +512,6 @@ function ProductsTab() {
             <NumberInput label="ราคาขาย" required min={0} decimalScale={2} value={receiveForm.sellingPrice}
               onChange={(v) => setReceiveForm({ ...receiveForm, sellingPrice: Number(v) })} />
           </Group>
-          {/* Real-time Margin Calculation */}
           {(() => {
             const cost = receiveForm.costPerUnit || 0
             const sell = receiveForm.sellingPrice || 0
@@ -423,17 +575,28 @@ function ProductsTab() {
           </Group>
         </Stack>
       </Modal>
-    </>
+    </div>
   )
 }
 
 /* ====================================================================
    Shared Product Form
    ==================================================================== */
-function ProductForm({ form, setForm, categories, loading, onSubmit, submitLabel, color }: {
-  form: any; setForm: (f: any) => void; categories: any[]
+function ProductForm({ form, setForm, categories, attributeGroups, unitOptions, loading, onSubmit, submitLabel, color }: {
+  form: any; setForm: (f: any) => void; categories: any[]; attributeGroups: any[]; unitOptions: string[]
   loading: boolean; onSubmit: () => void; submitLabel: string; color?: string
 }) {
+  const getAttrValue = (groupId: number) => {
+    const attr = (form.attributes || []).find((a: any) => a.groupId === groupId)
+    return attr ? String(attr.valueId) : null
+  }
+
+  const setAttrValue = (groupId: number, valueId: string | null) => {
+    const attrs = (form.attributes || []).filter((a: any) => a.groupId !== groupId)
+    if (valueId) attrs.push({ groupId, valueId: parseInt(valueId) })
+    setForm({ ...form, attributes: attrs })
+  }
+
   return (
     <Stack gap="md">
       <Group grow>
@@ -444,13 +607,28 @@ function ProductForm({ form, setForm, categories, loading, onSubmit, submitLabel
       <TextInput label="รายละเอียด" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
       <Group grow>
         <Select label="หมวดหมู่" data={categories} value={form.categoryId} onChange={(v) => setForm({ ...form, categoryId: v || '' })} clearable searchable />
-        <TextInput label="หน่วยนับ" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
+        <Select label="หน่วยนับ" data={unitOptions} value={form.unit}
+          onChange={(v) => setForm({ ...form, unit: v || 'ชิ้น' })} searchable />
       </Group>
+      {/* Attribute Groups (หมวดสินค้า, แบรนด์, ประเภท, etc.) */}
+      {attributeGroups.length > 0 && (
+        <Group grow>
+          {attributeGroups.map((g: any) => (
+            <Select key={g.id} label={g.name}
+              data={(g.values || []).map((v: any) => ({ value: String(v.id), label: v.value }))}
+              value={getAttrValue(g.id)}
+              onChange={(val) => setAttrValue(g.id, val)}
+              clearable searchable />
+          ))}
+        </Group>
+      )}
       <Group grow>
         <NumberInput label="ราคาทุน" min={0} decimalScale={2} value={form.costPrice}
           onChange={(v) => setForm({ ...form, costPrice: Number(v) })} />
         <NumberInput label="ราคาขาย" required min={0} decimalScale={2} value={form.sellingPrice}
           onChange={(v) => setForm({ ...form, sellingPrice: Number(v) })} />
+        <NumberInput label="ราคาขายต่ำสุด" min={0} decimalScale={2} value={form.minSellingPrice}
+          onChange={(v) => setForm({ ...form, minSellingPrice: Number(v) })} />
       </Group>
       <NumberInput label="สต๊อกขั้นต่ำ (แจ้งเตือนเมื่อต่ำกว่า)" min={0} value={form.minStock}
         onChange={(v) => setForm({ ...form, minStock: Number(v) })} />

@@ -41,8 +41,16 @@ export default function PurchaseCreatePage() {
     setItems(prev => prev.map((item, i) => i === idx ? { ...item, ...updates } : item))
   }
 
+  // Fetch company settings for VAT rate
+  const { data: company } = useQuery({
+    queryKey: ['company-current'],
+    queryFn: () => api.get('/companies/current').then(r => r.data),
+  })
+  const companySettings = company?.settings || {}
+  const vatRate = companySettings.vat_enabled !== false ? (companySettings.vat_rate || 7) / 100 : 0
+
   const subtotal = items.reduce((s, i) => s + (i.quantity * i.unitCost), 0)
-  const vat = subtotal * 0.07
+  const vat = subtotal * vatRate
   const total = subtotal + vat
   const itemCount = items.filter(i => i.productId).length
 

@@ -33,14 +33,14 @@ export const INV_STATUSES: Record<string, { label: string; color: string }> = {
 // ============================================================
 // Order Statuses
 // ============================================================
-export const ORDER_STATUSES: Record<string, { color: string; label: string; icon: any }> = {
-  pending:    { color: 'yellow', label: 'รอยืนยัน', icon: IconClock },
-  confirmed:  { color: 'blue',   label: 'ยืนยันแล้ว', icon: IconCheck },
-  packing:    { color: 'cyan',   label: 'กำลังแพ็ค', icon: IconPackage },
-  shipped:    { color: 'indigo',  label: 'จัดส่งแล้ว', icon: IconTruckDelivery },
-  delivered:  { color: 'green',   label: 'ได้รับแล้ว', icon: IconCheck },
-  cancelled:  { color: 'red',     label: 'ยกเลิก', icon: IconX },
-  returned:   { color: 'orange',  label: 'คืนสินค้า', icon: IconAlertTriangle },
+export const ORDER_STATUSES: Record<string, { color: string; label: string; icon: any; step: number }> = {
+  pending:    { color: 'yellow', label: 'ออกบิล',        icon: IconClock,          step: 1 },
+  confirmed:  { color: 'blue',   label: 'ชำระเงินแล้ว',  icon: IconCheck,          step: 2 },
+  packing:    { color: 'cyan',   label: 'แพ็คสินค้า',    icon: IconPackage,        step: 3 },
+  shipped:    { color: 'indigo',  label: 'จัดส่งแล้ว',    icon: IconTruckDelivery,  step: 4 },
+  delivered:  { color: 'green',   label: 'ได้รับแล้ว',    icon: IconCheck,          step: 5 },
+  cancelled:  { color: 'red',     label: 'ยกเลิก',       icon: IconX,              step: 0 },
+  returned:   { color: 'orange',  label: 'คืนสินค้า',    icon: IconAlertTriangle,  step: 6 },
 }
 
 // ============================================================
@@ -85,12 +85,13 @@ export const PAYMENT_OPTIONS = [
 // ============================================================
 // Order Status Flow
 // ============================================================
+// Flow: ออกบิล(pending) → ชำระเงิน(confirmed) → แพ็ค(packing) → จัดส่ง(shipped) → ได้รับ(delivered) → คืน(returned)
 export const ORDER_NEXT_STATUS: Record<string, string[]> = {
-  pending:   ['confirmed', 'cancelled'],
-  confirmed: ['packing', 'cancelled'],
-  packing:   ['shipped', 'cancelled'],
-  shipped:   ['delivered', 'returned'],
-  delivered: [],
+  pending:   ['confirmed', 'cancelled'],   // ออกบิล → รอลูกค้าชำระ หรือ ยกเลิก
+  confirmed: ['packing', 'cancelled'],     // ชำระแล้ว → แพ็คสินค้า
+  packing:   ['shipped'],                  // แพ็คเสร็จ → จัดส่ง
+  shipped:   ['delivered'],                // จัดส่งแล้ว → ลูกค้าได้รับ
+  delivered: ['returned'],                 // ได้รับแล้ว → คืนสินค้า (ถ้ามี)
   cancelled: [],
   returned:  [],
 }
@@ -101,6 +102,15 @@ export const ORDER_PREV_STATUS: Record<string, string> = {
   shipped:   'packing',
   delivered: 'shipped',
 }
+
+// Workflow steps for stepper display
+export const ORDER_FLOW_STEPS = [
+  { key: 'pending',   label: 'ออกบิล',       description: 'สร้างออเดอร์และรอลูกค้าชำระเงิน' },
+  { key: 'confirmed', label: 'ชำระเงิน',     description: 'ลูกค้าชำระเงินเรียบร้อย' },
+  { key: 'packing',   label: 'แพ็คสินค้า',   description: 'เตรียมสินค้าและบรรจุภัณฑ์' },
+  { key: 'shipped',   label: 'จัดส่ง',       description: 'ส่งสินค้าให้ขนส่ง' },
+  { key: 'delivered', label: 'ติดตามผล',     description: 'ลูกค้าได้รับสินค้าเรียบร้อย' },
+]
 
 // ============================================================
 // Stock / Inventory

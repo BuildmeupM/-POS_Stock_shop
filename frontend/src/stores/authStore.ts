@@ -23,7 +23,7 @@ interface AuthState {
   activeCompany: Company | null
   _hasHydrated: boolean
   setAuth: (token: string, user: User, companies: Company[], activeCompany: Company | null) => void
-  switchCompany: (company: Company, newToken: string) => void
+  switchCompany: (company: Company, newToken: string, companies?: Company[]) => void
   logout: () => void
   setHasHydrated: (val: boolean) => void
 }
@@ -38,8 +38,8 @@ export const useAuthStore = create<AuthState>()(
       _hasHydrated: false,
       setAuth: (token, user, companies, activeCompany) =>
         set({ token, user, companies, activeCompany }),
-      switchCompany: (company, newToken) =>
-        set({ activeCompany: company, token: newToken }),
+      switchCompany: (company, newToken, companies) =>
+        set((state) => ({ activeCompany: company, token: newToken, companies: companies || state.companies })),
       logout: () =>
         set({ token: null, user: null, companies: [], activeCompany: null }),
       setHasHydrated: (val) => set({ _hasHydrated: val }),

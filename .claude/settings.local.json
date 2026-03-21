@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/USER/Desktop/github/-POS_Stock_shop/backend -name *auth* -o -name *login*)",
+      "Bash(find /c/Users/USER/Desktop/github/-POS_Stock_shop -maxdepth 3 -name .env* -o -name index.html)",
+      "Bash(npx tsc:*)",
+      "Bash(cp routes/auth.js routes/auth/auth.js)",
+      "Bash(cp routes/users.js routes/auth/users.js)",
+      "Bash(cp routes/companies.js routes/company/companies.js)",
+      "Bash(cp routes/sales.js routes/pos/sales.js)",
+      "Bash(cp routes/creditNotes.js routes/pos/creditNotes.js)",
+      "WebFetch(domain:wijjittra.weebly.com)"
+    ]
+  }
+}

@@ -19,6 +19,17 @@ import SettingsPage from './pages/SettingsPage'
 import SalesPage from './pages/SalesPage'
 import WalletPage from './pages/WalletPage'
 import CreditNotesPage from './pages/CreditNotesPage'
+import AccountsPage from './pages/AccountsPage'
+import JournalsPage from './pages/JournalsPage'
+import TrialBalancePage from './pages/TrialBalancePage'
+import ProfitLossPage from './pages/ProfitLossPage'
+import BalanceSheetPage from './pages/BalanceSheetPage'
+import TaxSummaryPage from './pages/TaxSummaryPage'
+import SalesDocPage from './pages/SalesDocPage'
+import SalesDocCreatePage from './pages/SalesDocCreatePage'
+import ConsignmentPage from './pages/ConsignmentPage'
+import SalesReportsPage from './pages/SalesReportsPage'
+import InventoryReportPage from './pages/InventoryReportPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -50,6 +61,17 @@ export default function App() {
         <Route path="orders" element={<OrdersPage />} />
         <Route path="wallet" element={<WalletPage />} />
         <Route path="credit-notes" element={<CreditNotesPage />} />
+        <Route path="accounts" element={<AccountsPage />} />
+        <Route path="journals" element={<JournalsPage />} />
+        <Route path="sales-doc" element={<SalesDocPage />} />
+        <Route path="sales-doc/create" element={<SalesDocCreatePage />} />
+        <Route path="consignment" element={<ConsignmentPage />} />
+        <Route path="reports/sales" element={<SalesReportsPage />} />
+        <Route path="reports/inventory" element={<InventoryReportPage />} />
+        <Route path="reports/trial-balance" element={<TrialBalancePage />} />
+        <Route path="reports/pnl" element={<ProfitLossPage />} />
+        <Route path="reports/balance-sheet" element={<BalanceSheetPage />} />
+        <Route path="reports/tax" element={<TaxSummaryPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>

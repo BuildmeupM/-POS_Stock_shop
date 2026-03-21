@@ -129,8 +129,16 @@ export default function PurchaseDetailPage() {
     setEditItems(updated)
   }
 
+  // Fetch company settings for VAT rate
+  const { data: companyData } = useQuery({
+    queryKey: ['company-current'],
+    queryFn: () => api.get('/companies/current').then(r => r.data),
+  })
+  const companySettings = companyData?.settings || {}
+  const vatRate = companySettings.vat_enabled !== false ? (companySettings.vat_rate || 7) / 100 : 0
+
   const editSubtotal = useMemo(() => editItems.reduce((s, i) => s + (i.quantity * i.unitCost), 0), [editItems])
-  const editVat = editSubtotal * 0.07
+  const editVat = editSubtotal * vatRate
   const editTotal = editSubtotal + editVat
 
   // --- Save Mutation ---

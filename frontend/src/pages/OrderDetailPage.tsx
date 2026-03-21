@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Table, Button, TextInput, Group, Stack, Select, NumberInput, Modal,
+  Table, Button, TextInput, Group, Stack, Select, NumberInput, Modal, Menu,
   Text, Badge, Loader, SimpleGrid, ActionIcon, Divider, Card
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
@@ -12,12 +12,14 @@ import {
   IconFileInvoice, IconArrowRight, IconAlertTriangle,
   IconPhone, IconWorld, IconBrandFacebook, IconBrandShopee,
   IconShoppingBag, IconCash, IconTruck, IconPrinter,
-  IconEdit, IconDeviceFloppy, IconTrash, IconPlus, IconArrowBackUp
+  IconEdit, IconDeviceFloppy, IconTrash, IconPlus, IconArrowBackUp,
+  IconFileBarcode,
 } from '@tabler/icons-react'
 import api from '../services/api'
 import { fmt, fmtDateTimeFull as fmtDate } from '../utils/formatters'
 import OrderStepper from './orders/OrderStepper'
 import { printOrder } from './orders/printOrder'
+import { printShippingLabels } from '../utils/printShippingLabels'
 import {
   ORDER_STATUSES as statusConfig,
   PLATFORM_CONFIG as platformConfig,
@@ -48,7 +50,28 @@ export default function OrderDetailPage() {
   const [editItems, setEditItems] = useState<any[]>([])
   const [deleteConfirm, setDeleteConfirm] = useState(false)
 
+  // Payment confirmation modal
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+  const [payChannelId, setPayChannelId] = useState<string | null>(null)
+  const [payReference, setPayReference] = useState('')
+  const [payAmount, setPayAmount] = useState(0)
+
+  // Shipping modal
+  const [shippingModalOpen, setShippingModalOpen] = useState(false)
+  const [shipTracking, setShipTracking] = useState('')
+  const [shipProvider, setShipProvider] = useState('')
+
   // Queries
+  const { data: company } = useQuery({
+    queryKey: ['company-current'],
+    queryFn: () => api.get('/companies/current').then(r => r.data),
+  })
+
+  const { data: paymentChannels = [] } = useQuery({
+    queryKey: ['payment-channels'],
+    queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
+  })
+
   const { data: order, isLoading } = useQuery({
     queryKey: ['order-detail', id],
     queryFn: () => api.get(`/orders/${id}`).then(r => r.data),
@@ -173,15 +196,70 @@ export default function OrderDetailPage() {
   })
 
   const handleStatusChange = (status: string) => {
-    updateStatusMutation.mutate({
-      orderId: order.id, status,
-      tracking: trackingInput || undefined,
-      provider: shippingProviderInput || undefined,
-    })
+    // ถ้าจะเปลี่ยนเป็น "ชำระเงินแล้ว" → เปิด modal ถามวิธีชำระ
+    if (status === 'confirmed') {
+      setPayAmount(parseFloat(order?.net_amount) || 0)
+      setPayChannelId(null)
+      setPayReference('')
+      setPaymentModalOpen(true)
+      return
+    }
+    // ถ้าจะเปลี่ยนเป็น "จัดส่งแล้ว" → เปิด modal ถาม tracking
+    if (status === 'shipped') {
+      setShipTracking('')
+      setShipProvider('')
+      setShippingModalOpen(true)
+      return
+    }
+    // อื่นๆ ส่งตรง
+    updateStatusMutation.mutate({ orderId: order.id, status })
   }
 
-  // ===== PRINT FUNCTION =====
-    printOrder(order, creditNote)
+  const handleConfirmPayment = () => {
+    const channel = paymentChannels.find((c: any) => String(c.id) === payChannelId)
+    updateStatusMutation.mutate({
+      orderId: order.id, status: 'confirmed',
+      paymentMethod: channel?.type || 'transfer',
+      paymentChannelId: channel?.id || null,
+      paymentReference: payReference,
+    })
+    setPaymentModalOpen(false)
+  }
+
+  const handleConfirmShipping = () => {
+    updateStatusMutation.mutate({
+      orderId: order.id, status: 'shipped',
+      tracking: shipTracking || undefined,
+      provider: shipProvider || undefined,
+    })
+    setShippingModalOpen(false)
+  }
+
+  // ===== PRINT FUNCTIONS =====
+  const handlePrint = () => {
+    if (order) printOrder(order, creditNote, company)
+  }
+
+  const handlePrintLabel = () => {
+    if (!order) return
+    const plat = platformConfig[order.platform] || platformConfig.other
+    printShippingLabels({
+      companyName: company?.name || 'บริษัท',
+      companyPhone: company?.phone || '',
+      companyAddress: company?.address || '',
+      orders: [{
+        orderNumber: order.order_number,
+        customerName: order.customer_name || '-',
+        customerPhone: order.customer_phone,
+        shippingAddress: order.shipping_address,
+        platform: plat.label,
+        trackingNumber: order.tracking_number,
+        shippingProvider: order.shipping_provider,
+        items: (order.items || []).map((i: any) => ({ name: i.product_name || '-', qty: i.quantity })),
+        note: order.note,
+      }],
+    })
+  }
 
   if (isLoading || !order) {
     return <Loader style={{ margin: '60px auto', display: 'block' }} />
@@ -238,9 +316,21 @@ export default function OrderDetailPage() {
               </Button>
             </>
           )}
-          <Button variant="light" color="gray" leftSection={<IconPrinter size={16} />} onClick={() => printOrder(order, creditNote)}>
-            พิมพ์
-          </Button>
+          <Menu shadow="md" width={200}>
+            <Menu.Target>
+              <Button variant="light" color="gray" leftSection={<IconPrinter size={16} />}>
+                พิมพ์
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item leftSection={<IconFileInvoice size={14} />} onClick={handlePrint}>
+                ใบส่งสินค้า / Invoice
+              </Menu.Item>
+              <Menu.Item leftSection={<IconFileBarcode size={14} />} onClick={handlePrintLabel}>
+                ใบปะหน้าพัสดุ
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Group>
       </Group>
 
@@ -601,10 +691,173 @@ export default function OrderDetailPage() {
       )}
 
       {/* ===== DELETE CONFIRMATION MODAL ===== */}
-      <Modal opened={deleteConfirm} onClose={() => setDeleteConfirm(false)}
-        title="⚠️ ยืนยันการลบ" size="sm" centered>
+      {/* ===== Modal: ยืนยันชำระเงิน ===== */}
+      <Modal opened={paymentModalOpen} onClose={() => setPaymentModalOpen(false)}
+        title="ยืนยันการชำระเงิน" size="lg" centered>
         <Stack gap="md">
-          <Text>คุณต้องการลบออเดอร์ <Text span fw={700} ff="monospace">{order.order_number}</Text> ใช่หรือไม่?</Text>
+          {/* ยอดที่ต้องชำระ */}
+          <Card padding="md" radius="md" withBorder
+            style={{ background: 'linear-gradient(135deg, #059669, #10b981)', border: 'none' }}>
+            <Group justify="space-between">
+              <Text size="sm" c="rgba(255,255,255,0.8)" fw={600}>ยอดที่ต้องชำระ</Text>
+              <Text size="xl" fw={800} c="white">฿{fmt(payAmount)}</Text>
+            </Group>
+          </Card>
+
+          {/* เลือกช่องทางชำระเงิน */}
+          <div>
+            <Text size="sm" fw={600} mb={8}>เลือกช่องทางชำระเงิน <Text span c="red">*</Text></Text>
+            {paymentChannels.length === 0 ? (
+              <Card padding="md" radius="md" withBorder>
+                <Text ta="center" c="dimmed" size="sm">ยังไม่มีช่องทางชำระเงิน — กรุณาเพิ่มในหน้า "กระเป๋าเงิน" ก่อน</Text>
+              </Card>
+            ) : (
+              <SimpleGrid cols={2} spacing="sm">
+                {paymentChannels.map((ch: any) => {
+                  const isSelected = payChannelId === String(ch.id)
+                  const typeLabel = ch.type === 'cash' ? 'เงินสด' : ch.type === 'transfer' ? 'โอนเงิน' :
+                    ch.type === 'credit_card' ? 'บัตรเครดิต' : ch.type === 'qr_code' ? 'QR Code' : ch.type
+                  const typeColor = ch.type === 'cash' ? '#059669' : ch.type === 'transfer' ? '#3b82f6' :
+                    ch.type === 'credit_card' ? '#8b5cf6' : ch.type === 'qr_code' ? '#06b6d4' : '#6b7280'
+
+                  return (
+                    <Card key={ch.id} padding="sm" radius="md" withBorder
+                      onClick={() => setPayChannelId(String(ch.id))}
+                      style={{
+                        cursor: 'pointer',
+                        border: isSelected ? `2px solid ${typeColor}` : '1px solid var(--app-border)',
+                        background: isSelected ? `${typeColor}08` : 'var(--app-surface)',
+                        transition: 'all 0.2s',
+                      }}>
+                      <Group gap={10} wrap="nowrap">
+                        {/* Color dot */}
+                        <div style={{
+                          width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                          background: isSelected ? typeColor : `${typeColor}20`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          color: isSelected ? '#fff' : typeColor, fontWeight: 800, fontSize: 14,
+                          transition: 'all 0.2s',
+                        }}>
+                          {ch.type === 'cash' ? '฿' : ch.type === 'transfer' ? '🏦' :
+                           ch.type === 'credit_card' ? '💳' : ch.type === 'qr_code' ? '📱' : '💰'}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text size="sm" fw={700} lineClamp={1}>{ch.name}</Text>
+                          <Text size="xs" c="dimmed" lineClamp={1}>
+                            {ch.bank_name ? `${ch.bank_name}` : typeLabel}
+                            {ch.account_number ? ` • ${ch.account_number}` : ''}
+                          </Text>
+                          {ch.account_name && (
+                            <Text size="xs" c="dimmed" lineClamp={1}>{ch.account_name}</Text>
+                          )}
+                        </div>
+                        {/* Check mark */}
+                        {isSelected && (
+                          <div style={{
+                            width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                            background: typeColor, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <IconCheck size={14} color="#fff" />
+                          </div>
+                        )}
+                      </Group>
+                    </Card>
+                  )
+                })}
+              </SimpleGrid>
+            )}
+          </div>
+
+          {/* หมายเลขอ้างอิง */}
+          <TextInput label="หมายเลขอ้างอิง / สลิป" placeholder="เช่น เลขที่สลิปโอนเงิน, หมายเลข transaction"
+            value={payReference} onChange={(e) => setPayReference(e.target.value)} />
+
+          <Group justify="flex-end" mt="sm">
+            <Button variant="light" onClick={() => setPaymentModalOpen(false)}>ยกเลิก</Button>
+            <Button color="green" leftSection={<IconCheck size={16} />}
+              loading={updateStatusMutation.isPending}
+              disabled={!payChannelId}
+              onClick={handleConfirmPayment}>
+              ยืนยันชำระเงิน
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* ===== Modal: จัดส่งสินค้า ===== */}
+      <Modal opened={shippingModalOpen} onClose={() => setShippingModalOpen(false)}
+        title="บันทึกการจัดส่ง" size="md" centered>
+        <Stack gap="md">
+          <TextInput label="หมายเลข Tracking" placeholder="เช่น TH12345678"
+            value={shipTracking} onChange={(e) => setShipTracking(e.target.value)} />
+
+          <div>
+            <Text size="sm" fw={600} mb={8}>บริษัทขนส่ง</Text>
+            <SimpleGrid cols={2} spacing="xs">
+              {[
+                { value: 'Kerry Express', short: 'KEX', bg: '#f97316', text: '#fff' },
+                { value: 'Flash Express', short: 'FL', bg: '#eab308', text: '#fff' },
+                { value: 'J&T Express', short: 'J&T', bg: '#ef4444', text: '#fff' },
+                { value: 'ไปรษณีย์ไทย', short: 'THP', bg: '#dc2626', text: '#fff' },
+                { value: 'Ninja Van', short: 'NV', bg: '#cd2027', text: '#fff' },
+                { value: 'DHL', short: 'DHL', bg: '#ffcc00', text: '#c00' },
+                { value: 'SCG Express', short: 'SCG', bg: '#1e40af', text: '#fff' },
+                { value: 'Best Express', short: 'BST', bg: '#f97316', text: '#fff' },
+                { value: 'SPX Express', short: 'SPX', bg: '#ee4d2d', text: '#fff' },
+                { value: 'อื่นๆ', short: '...', bg: '#6b7280', text: '#fff' },
+              ].map(sp => {
+                const isSelected = shipProvider === sp.value
+                return (
+                  <Card key={sp.value} padding="xs" radius="md" withBorder
+                    onClick={() => setShipProvider(isSelected ? '' : sp.value)}
+                    style={{
+                      cursor: 'pointer',
+                      border: isSelected ? `2px solid ${sp.bg}` : '1px solid var(--app-border)',
+                      background: isSelected ? `${sp.bg}0a` : 'var(--app-surface)',
+                      transition: 'all 0.15s',
+                    }}>
+                    <Group gap={10} wrap="nowrap">
+                      <div style={{
+                        width: 38, height: 38, borderRadius: 8, flexShrink: 0,
+                        background: sp.bg, color: sp.text,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontWeight: 800, fontSize: sp.short.length > 2 ? 11 : 14,
+                        letterSpacing: -0.5,
+                      }}>
+                        {sp.short}
+                      </div>
+                      <Text size="sm" fw={isSelected ? 700 : 500} style={{ flex: 1 }}>{sp.value}</Text>
+                      {isSelected && (
+                        <div style={{
+                          width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                          background: sp.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                          <IconCheck size={13} color="#fff" />
+                        </div>
+                      )}
+                    </Group>
+                  </Card>
+                )
+              })}
+            </SimpleGrid>
+          </div>
+
+          <Group justify="flex-end" mt="sm">
+            <Button variant="light" onClick={() => setShippingModalOpen(false)}>ยกเลิก</Button>
+            <Button color="indigo" leftSection={<IconTruckDelivery size={16} />}
+              loading={updateStatusMutation.isPending}
+              onClick={handleConfirmShipping}>
+              บันทึกจัดส่ง
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* ===== Modal: ลบออเดอร์ ===== */}
+      <Modal opened={deleteConfirm} onClose={() => setDeleteConfirm(false)}
+        title="ยืนยันการลบ" size="sm" centered>
+        <Stack gap="md">
+          <Text>ต้องการลบออเดอร์ <Text span fw={700} ff="monospace">{order.order_number}</Text> ?</Text>
           <Text size="sm" c="red">การลบจะไม่สามารถย้อนกลับได้</Text>
           <Group justify="flex-end">
             <Button variant="light" onClick={() => setDeleteConfirm(false)}>ยกเลิก</Button>
