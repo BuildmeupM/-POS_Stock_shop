@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const { executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 
 router.use(auth, companyGuard)
@@ -10,22 +10,41 @@ router.use(auth, companyGuard)
 // GET /api/suppliers — list suppliers
 router.get('/', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { search, active } = req.query
-    let query = 'SELECT * FROM suppliers WHERE company_id = ?'
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE company_id = ?'
+    const baseParams = [req.user.companyId]
 
     if (search) {
-      query += ' AND (name LIKE ? OR code LIKE ? OR contact_name LIKE ? OR phone LIKE ?)'
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
+      whereClause += ' AND (name LIKE ? OR code LIKE ? OR contact_name LIKE ? OR phone LIKE ?)'
+      baseParams.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
     }
     if (active !== undefined) {
-      query += ' AND is_active = ?'
-      params.push(active === 'true')
+      whereClause += ' AND is_active = ?'
+      baseParams.push(active === 'true')
     }
 
-    query += ' ORDER BY name ASC'
-    const suppliers = await executeQuery(query, params)
-    res.json(suppliers)
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM suppliers ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const suppliers = await executeQuery(
+        `SELECT * FROM suppliers ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: suppliers, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const suppliers = await executeQuery(
+        `SELECT * FROM suppliers ${whereClause} ORDER BY name ASC LIMIT 500`,
+        baseParams
+      )
+      res.json(suppliers)
+    }
   } catch (error) {
     console.error('Get suppliers error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -48,7 +67,7 @@ router.get('/:id', async (req, res) => {
 })
 
 // POST /api/suppliers
-router.post('/', async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   try {
     const { name, contactName, phone, email, taxId, address, paymentTerms, bankAccount, bankName, note } = req.body
     if (!name) return res.status(400).json({ message: 'กรุณากรอกชื่อ Supplier' })
@@ -70,7 +89,7 @@ router.post('/', async (req, res) => {
 })
 
 // PUT /api/suppliers/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   try {
     const { name, contactName, phone, email, taxId, address, paymentTerms, bankAccount, bankName, note, isActive } = req.body
 
@@ -91,7 +110,7 @@ router.put('/:id', async (req, res) => {
 })
 
 // DELETE /api/suppliers/:id (soft delete)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   try {
     await executeQuery(
       'UPDATE suppliers SET is_active = FALSE WHERE id = ? AND company_id = ?',

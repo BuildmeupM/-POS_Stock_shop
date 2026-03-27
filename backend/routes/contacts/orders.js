@@ -2,24 +2,49 @@ const express = require('express')
 const router = express.Router()
 const { pool, executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
+
 
 router.use(auth, companyGuard)
 
 // GET /api/orders
 router.get('/', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { status, platform, from, to } = req.query
-    let query = `SELECT oo.*, c.name as customer_name_ref FROM online_orders oo
-      LEFT JOIN customers c ON oo.customer_id = c.id WHERE oo.company_id = ?`
-    const params = [req.user.companyId]
-    if (status) { query += ' AND oo.order_status = ?'; params.push(status) }
-    if (platform) { query += ' AND oo.platform = ?'; params.push(platform) }
-    if (from) { query += ' AND oo.created_at >= ?'; params.push(from) }
-    if (to) { query += ' AND oo.created_at <= ?'; params.push(to) }
-    query += ' ORDER BY oo.created_at DESC LIMIT 200'
-    res.json(await executeQuery(query, params))
+    let whereClause = 'WHERE oo.company_id = ?'
+    const baseParams = [req.user.companyId]
+    if (status) { whereClause += ' AND oo.order_status = ?'; baseParams.push(status) }
+    if (platform) { whereClause += ' AND oo.platform = ?'; baseParams.push(platform) }
+    if (from) { whereClause += ' AND oo.created_at >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND oo.created_at <= ?'; baseParams.push(to) }
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM online_orders oo ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const rows = await executeQuery(
+        `SELECT oo.*, c.name as customer_name_ref FROM online_orders oo
+          LEFT JOIN customers c ON oo.customer_id = c.id ${whereClause}
+          ORDER BY oo.created_at DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const rows = await executeQuery(
+        `SELECT oo.*, c.name as customer_name_ref FROM online_orders oo
+          LEFT JOIN customers c ON oo.customer_id = c.id ${whereClause}
+          ORDER BY oo.created_at DESC LIMIT 500`,
+        baseParams
+      )
+      res.json(rows)
+    }
   } catch (error) {
     console.error('Get orders error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -27,7 +52,7 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/orders
-router.post('/', async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), async (req, res) => {
   try {
     const { platform, customerId, customerName, customerPhone, shippingAddress,
             items, shippingCost, discountAmount, paymentMethod, paymentChannelId, note } = req.body
@@ -60,6 +85,7 @@ router.post('/', async (req, res) => {
         )
       }
     }
+
     res.status(201).json({ message: 'สร้างออเดอร์สำเร็จ', orderId, orderNumber })
   } catch (error) {
     console.error('Create order error:', error)
@@ -87,7 +113,7 @@ router.get('/:id', async (req, res) => {
 })
 
 // PUT /api/orders/:id  (edit – only when pending)
-router.put('/:id', async (req, res) => {
+router.put('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -143,7 +169,7 @@ router.put('/:id', async (req, res) => {
 })
 
 // PUT /api/orders/:id/status
-router.put('/:id/status', async (req, res) => {
+router.put('/:id/status', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -223,7 +249,7 @@ router.put('/:id/status', async (req, res) => {
 })
 
 // DELETE /api/orders/:id  (only when pending)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -232,6 +258,14 @@ router.delete('/:id', async (req, res) => {
       [req.params.id, req.user.companyId, 'pending']
     )
     if (orders.length === 0) return res.status(400).json({ message: 'ไม่สามารถลบได้ (สถานะต้องเป็น รอยืนยัน)' })
+
+    // Remove credit notes referencing this order (FK: credit_notes → online_orders)
+    const [cns] = await connection.execute('SELECT id FROM credit_notes WHERE order_id = ?', [req.params.id]).catch(() => [[]])
+    for (const cn of cns) {
+      await connection.execute('DELETE FROM credit_note_items WHERE credit_note_id = ?', [cn.id]).catch(() => {})
+    }
+    await connection.execute('DELETE FROM credit_notes WHERE order_id = ?', [req.params.id]).catch(() => {})
+
     await connection.execute('DELETE FROM online_order_items WHERE order_id = ?', [req.params.id])
     await connection.execute('DELETE FROM online_orders WHERE id = ?', [req.params.id])
     await connection.commit()

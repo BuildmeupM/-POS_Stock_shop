@@ -13,16 +13,43 @@ router.use(auth, companyGuard)
 // GET /api/users — list all users in the current company
 router.get('/', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   try {
-    const users = await executeQuery(
-      `SELECT u.id, u.username, u.full_name, u.nick_name, u.is_active, u.created_at,
-              uc.role, uc.joined_at
-       FROM user_companies uc
-       JOIN users u ON uc.user_id = u.id
-       WHERE uc.company_id = ?
-       ORDER BY FIELD(uc.role, 'owner', 'admin', 'manager', 'cashier', 'accountant', 'staff'), u.full_name`,
-      [req.user.companyId]
-    )
-    res.json(users)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    const baseWhere = 'WHERE uc.company_id = ?'
+    const baseParams = [req.user.companyId]
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM user_companies uc ${baseWhere}`, baseParams
+      )
+      const total = countResult.total
+
+      const users = await executeQuery(
+        `SELECT u.id, u.username, u.full_name, u.nick_name, u.is_active, u.created_at,
+                uc.role, uc.joined_at
+         FROM user_companies uc
+         JOIN users u ON uc.user_id = u.id
+         ${baseWhere}
+         ORDER BY FIELD(uc.role, 'owner', 'admin', 'manager', 'cashier', 'accountant', 'staff'), u.full_name
+         LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: users, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const users = await executeQuery(
+        `SELECT u.id, u.username, u.full_name, u.nick_name, u.is_active, u.created_at,
+                uc.role, uc.joined_at
+         FROM user_companies uc
+         JOIN users u ON uc.user_id = u.id
+         ${baseWhere}
+         ORDER BY FIELD(uc.role, 'owner', 'admin', 'manager', 'cashier', 'accountant', 'staff'), u.full_name
+         LIMIT 500`,
+        baseParams
+      )
+      res.json(users)
+    }
   } catch (error) {
     console.error('List users error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })

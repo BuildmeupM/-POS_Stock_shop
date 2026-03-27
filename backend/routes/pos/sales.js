@@ -2,17 +2,19 @@ const express = require('express')
 const router = express.Router()
 const { pool, executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { deductStockFIFO } = require('../../utils/fifo')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry, voidJournalEntry } = require('../../utils/journal')
 const { validate } = require('../../middleware/validate')
 const { createSaleSchema } = require('../../middleware/schemas')
+const { writeAuditLog } = require('../../middleware/auditLog')
+
 
 router.use(auth, companyGuard)
 
 // POST /api/sales — create sale (POS checkout)
-router.post('/', validate(createSaleSchema), async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), validate(createSaleSchema), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -56,15 +58,28 @@ router.post('/', validate(createSaleSchema), async (req, res) => {
       }
 
       const [products] = await connection.execute(
-        'SELECT selling_price, is_consignment FROM products WHERE id = ? AND company_id = ?',
+        'SELECT selling_price, min_selling_price, is_consignment FROM products WHERE id = ? AND company_id = ?',
         [item.productId, companyId]
       )
       if (products.length === 0) continue
 
-      const unitPrice = item.unitPrice || parseFloat(products[0].selling_price)
+      const product = products[0]
+      const unitPrice = item.unitPrice || parseFloat(product.selling_price)
       const discount = item.discount || 0
+      // Effective price per unit after line-level discount
+      const effectiveUnitPrice = item.quantity > 0 ? (unitPrice - discount / item.quantity) : unitPrice
+      const minPrice = parseFloat(product.min_selling_price) || 0
+
+      // Enforce minimum selling price
+      if (minPrice > 0 && effectiveUnitPrice < minPrice) {
+        await connection.rollback()
+        return res.status(400).json({
+          message: `ราคาขายสินค้า ID ${item.productId} ต่ำกว่าราคาขายขั้นต่ำ (ขั้นต่ำ: ฿${minPrice.toFixed(2)}, ที่ขาย: ฿${effectiveUnitPrice.toFixed(2)})`
+        })
+      }
+
       const subtotal = (unitPrice * item.quantity) - discount
-      const isConsignment = products[0].is_consignment || false
+      const isConsignment = product.is_consignment || false
 
       let costPrice = 0
       let consignmentStockId = null
@@ -262,7 +277,51 @@ router.post('/', validate(createSaleSchema), async (req, res) => {
       lines: journalLines,
     })
 
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'CREATE', entityType: 'sale', entityId: saleId,
+      description: `สร้างบิลขาย ${invoiceNumber}`,
+      newValues: { invoiceNumber, totalAmount, discountAmount: discount, vatAmount: roundedVat, netAmount, paymentMethod: paymentMethod || 'cash', itemCount: saleItems.length },
+      req,
+    })
+
+    // === Auto-earn loyalty points ===
+    let pointsEarned = 0
+    if (customerId) {
+      const pointsPerBaht = settings.points_per_baht ?? 0
+      if (pointsPerBaht > 0) {
+        pointsEarned = Math.floor(netAmount * pointsPerBaht)
+        if (pointsEarned > 0) {
+          // Check if this is a contact (ct_ prefix) or customer
+          const isContact = String(customerId).startsWith('ct_')
+          const contactIdNum = isContact ? String(customerId).replace('ct_', '') : null
+          if (contactIdNum) {
+            const [contactRows] = await connection.execute(
+              'SELECT points_balance FROM contacts WHERE id = ? AND company_id = ?',
+              [contactIdNum, companyId]
+            )
+            if (contactRows.length > 0) {
+              const currentBalance = contactRows[0].points_balance || 0
+              const newBalance = currentBalance + pointsEarned
+              await connection.execute(
+                'UPDATE contacts SET points_balance = ? WHERE id = ? AND company_id = ?',
+                [newBalance, contactIdNum, companyId]
+              )
+              await connection.execute(
+                `INSERT INTO loyalty_transactions (company_id, contact_id, sale_id, type, points, balance_after, description, created_by)
+                 VALUES (?, ?, ?, 'earn', ?, ?, ?, ?)`,
+                [companyId, contactIdNum, saleId, pointsEarned, newBalance,
+                 `สะสมแต้มจากบิล ${invoiceNumber}`, req.user.id]
+              )
+            }
+          }
+        }
+      }
+    }
+
     await connection.commit()
+
+
 
     res.status(201).json({
       message: 'บันทึกการขายสำเร็จ',
@@ -272,6 +331,7 @@ router.post('/', validate(createSaleSchema), async (req, res) => {
       discountAmount: discount,
       vatAmount: roundedVat,
       netAmount,
+      pointsEarned,
     })
   } catch (error) {
     await connection.rollback()
@@ -285,23 +345,49 @@ router.post('/', validate(createSaleSchema), async (req, res) => {
 // GET /api/sales — list sales
 router.get('/', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { from, to, status, saleType } = req.query
-    let query = `
-      SELECT s.*, u.full_name as cashier_name, c.name as customer_name
-      FROM sales s
-      LEFT JOIN users u ON s.cashier_id = u.id
-      LEFT JOIN customers c ON s.customer_id = c.id
-      WHERE s.company_id = ?`
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE s.company_id = ?'
+    const baseParams = [req.user.companyId]
 
-    if (from) { query += ' AND s.sold_at >= ?'; params.push(from) }
-    if (to) { query += ' AND s.sold_at <= ?'; params.push(to) }
-    if (status) { query += ' AND s.status = ?'; params.push(status) }
-    if (saleType) { query += ' AND s.sale_type = ?'; params.push(saleType) }
+    if (from) { whereClause += ' AND s.sold_at >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND s.sold_at <= ?'; baseParams.push(to) }
+    if (status) { whereClause += ' AND s.status = ?'; baseParams.push(status) }
+    if (saleType) { whereClause += ' AND s.sale_type = ?'; baseParams.push(saleType) }
 
-    query += ' ORDER BY s.sold_at DESC LIMIT 200'
-    const sales = await executeQuery(query, params)
-    res.json(sales)
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM sales s ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const sales = await executeQuery(
+        `SELECT s.*, u.full_name as cashier_name, c.name as customer_name,
+          (SELECT GROUP_CONCAT(CONCAT(sd.doc_type, ':', sd.doc_number) SEPARATOR '|')
+           FROM sales_documents sd WHERE sd.sale_id = s.id AND sd.status != 'voided') as linked_doc_refs
+        FROM sales s
+        LEFT JOIN users u ON s.cashier_id = u.id
+        LEFT JOIN customers c ON s.customer_id = c.id
+        ${whereClause} ORDER BY s.sold_at DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: sales, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const sales = await executeQuery(
+        `SELECT s.*, u.full_name as cashier_name, c.name as customer_name,
+          (SELECT GROUP_CONCAT(CONCAT(sd.doc_type, ':', sd.doc_number) SEPARATOR '|')
+           FROM sales_documents sd WHERE sd.sale_id = s.id AND sd.status != 'voided') as linked_doc_refs
+        FROM sales s
+        LEFT JOIN users u ON s.cashier_id = u.id
+        LEFT JOIN customers c ON s.customer_id = c.id
+        ${whereClause} ORDER BY s.sold_at DESC LIMIT 500`,
+        baseParams
+      )
+      res.json(sales)
+    }
   } catch (error) {
     console.error('Get sales error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -311,11 +397,29 @@ router.get('/', async (req, res) => {
 // GET /api/sales/customers/all
 router.get('/customers/all', async (req, res) => {
   try {
-    const customers = await executeQuery(
-      'SELECT * FROM customers WHERE company_id = ? AND is_active = TRUE ORDER BY name',
-      [req.user.companyId]
-    )
-    res.json(customers)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        'SELECT COUNT(*) as total FROM customers WHERE company_id = ? AND is_active = TRUE',
+        [req.user.companyId]
+      )
+      const total = countResult.total
+
+      const customers = await executeQuery(
+        'SELECT * FROM customers WHERE company_id = ? AND is_active = TRUE ORDER BY name LIMIT ? OFFSET ?',
+        [req.user.companyId, limit, offset]
+      )
+      res.json({ data: customers, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const customers = await executeQuery(
+        'SELECT * FROM customers WHERE company_id = ? AND is_active = TRUE ORDER BY name LIMIT 500',
+        [req.user.companyId]
+      )
+      res.json(customers)
+    }
   } catch (error) {
     console.error('Get customers error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -342,7 +446,7 @@ router.get('/customers/search', async (req, res) => {
     results.push(...customers)
 
     // 2) Search from contacts table (customer/both)
-    let ctQuery = `SELECT id, name, phone, email, tax_id, address, contact_type as customer_type, "contact" as source
+    let ctQuery = `SELECT id, name, phone, email, tax_id, address, contact_type as customer_type, points_balance, price_level, "contact" as source
       FROM contacts WHERE company_id = ? AND is_active = TRUE AND contact_type IN ('customer', 'both')`
     const ctParams = [companyId]
     if (q && q.trim()) {
@@ -389,7 +493,15 @@ router.get('/:id', async (req, res) => {
       [req.params.id]
     )
 
-    res.json({ ...sales[0], items, payments })
+    // Linked sales documents (ใบเสร็จรับเงิน, ใบกำกับภาษี, etc.) — include voided for display
+    const linkedDocs = await executeQuery(
+      `SELECT id, doc_type, doc_number, status, total_amount, created_at
+       FROM sales_documents WHERE sale_id = ?
+       ORDER BY created_at DESC`,
+      [req.params.id]
+    )
+
+    res.json({ ...sales[0], items, payments, linkedDocs })
   } catch (error) {
     console.error('Get sale detail error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -397,7 +509,7 @@ router.get('/:id', async (req, res) => {
 })
 
 // PUT /api/sales/:id/void — void sale
-router.put('/:id/void', async (req, res) => {
+router.put('/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -431,17 +543,82 @@ router.put('/:id/void', async (req, res) => {
       await voidJournalEntry(connection, j.id)
     }
 
+    // === Restore stock: regular items (FIFO reverse) ===
+    const [itemsToRestore] = await connection.execute(
+      `SELECT si.product_id, si.quantity, si.cost_price, si.is_consignment, si.consignment_stock_id
+       FROM sale_items si WHERE si.sale_id = ? AND si.product_id IS NOT NULL`,
+      [saleId]
+    )
+
+    const [warehouses] = await connection.execute(
+      'SELECT id FROM warehouses WHERE company_id = ? AND is_active = TRUE LIMIT 1',
+      [companyId]
+    )
+    const warehouseId = warehouses[0]?.id
+
+    for (const item of itemsToRestore) {
+      if (item.is_consignment && item.consignment_stock_id) {
+        // === Restore consignment stock ===
+        await connection.execute(
+          'UPDATE consignment_stock SET quantity_sold = quantity_sold - ?, quantity_on_hand = quantity_on_hand + ? WHERE id = ?',
+          [item.quantity, item.quantity, item.consignment_stock_id]
+        )
+      } else if (warehouseId) {
+        // === Restore regular stock (คืนกลับ stock_lots — FIFO reverse) ===
+        const [latestLot] = await connection.execute(
+          `SELECT id FROM stock_lots
+           WHERE product_id = ? AND warehouse_id = ?
+           ORDER BY received_at DESC LIMIT 1`,
+          [item.product_id, warehouseId]
+        )
+        if (latestLot.length > 0) {
+          await connection.execute(
+            'UPDATE stock_lots SET quantity_remaining = quantity_remaining + ? WHERE id = ?',
+            [item.quantity, latestLot[0].id]
+          )
+        } else {
+          // ไม่เคยมี lot → สร้าง lot ใหม่
+          await connection.execute(
+            `INSERT INTO stock_lots (product_id, warehouse_id, quantity_remaining, cost_per_unit)
+             VALUES (?, ?, ?, ?)`,
+            [item.product_id, warehouseId, item.quantity, item.cost_price]
+          )
+        }
+        // Insert reverse stock transaction
+        await connection.execute(
+          `INSERT INTO stock_transactions (product_id, warehouse_id, type, quantity, cost_per_unit, reference_type, reference_id, note, created_by)
+           VALUES (?, ?, 'RETURN', ?, ?, 'VOID_SALE', ?, ?, ?)`,
+          [item.product_id, warehouseId, item.quantity, item.cost_price, saleId, `คืนสต๊อกจากยกเลิกบิล`, req.user.id]
+        )
+      }
+    }
+
+    // === Void linked sales documents ===
+    const [linkedDocs] = await connection.execute(
+      "SELECT id, journal_entry_id FROM sales_documents WHERE sale_id = ? AND status != 'voided'",
+      [saleId]
+    )
+    for (const doc of linkedDocs) {
+      if (doc.journal_entry_id) {
+        await voidJournalEntry(connection, doc.journal_entry_id)
+      }
+      await connection.execute(
+        "UPDATE sales_documents SET status = 'voided' WHERE id = ?",
+        [doc.id]
+      )
+    }
+
     // Create reverse journal
     const netAmount = parseFloat(sale.net_amount) || 0
     const vatAmount = parseFloat(sale.vat_amount) || 0
     const revenueAmount = netAmount - vatAmount
 
     // Get COGS from sale items
-    const [saleItems] = await connection.execute(
-      'SELECT SUM(quantity * cost_price) as total_cost FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL',
+    const [costRows] = await connection.execute(
+      'SELECT SUM(quantity * cost_price) as total_cost FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND (is_consignment = FALSE OR is_consignment IS NULL)',
       [saleId]
     )
-    const totalCost = parseFloat(saleItems[0]?.total_cost) || 0
+    const totalCost = parseFloat(costRows[0]?.total_cost) || 0
 
     const reverseLines = []
     // Reverse: Credit Cash, Debit Revenue
@@ -454,10 +631,22 @@ router.put('/:id/void', async (req, res) => {
     if (vatAmount > 0) {
       reverseLines.push({ accountCode: '2120', debit: vatAmount, credit: 0, description: `กลับภาษีขาย ${sale.invoice_number}` })
     }
-    // Reverse COGS
+    // Reverse COGS (regular items only)
     if (totalCost > 0) {
       reverseLines.push({ accountCode: '5100', debit: 0, credit: totalCost, description: `กลับต้นทุนขาย ${sale.invoice_number}` })
       reverseLines.push({ accountCode: '1200', debit: totalCost, credit: 0, description: `คืนสต๊อก ${sale.invoice_number}` })
+    }
+
+    // Reverse consignment entries
+    const consignmentItems = itemsToRestore.filter(i => i.is_consignment)
+    if (consignmentItems.length > 0) {
+      let totalConsignorPayable = 0
+      for (const ci of consignmentItems) {
+        totalConsignorPayable += parseFloat(ci.cost_price) * ci.quantity
+      }
+      if (totalConsignorPayable > 0) {
+        reverseLines.push({ accountCode: '2150', debit: totalConsignorPayable, credit: 0, description: `กลับเจ้าหนี้ฝากขาย ${sale.invoice_number}` })
+      }
     }
 
     await createJournalEntry(connection, {
@@ -467,12 +656,88 @@ router.put('/:id/void', async (req, res) => {
       createdBy: req.user.id, lines: reverseLines,
     })
 
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'VOID', entityType: 'sale', entityId: saleId,
+      description: `ยกเลิกบิลขาย ${sale.invoice_number}`,
+      oldValues: { invoiceNumber: sale.invoice_number, netAmount: sale.net_amount, status: 'completed' },
+      newValues: { status: 'voided' },
+      req,
+    })
+
     await connection.commit()
+
     res.json({ message: 'ยกเลิกบิลสำเร็จ' })
   } catch (error) {
     await connection.rollback()
     console.error('Void sale error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  } finally {
+    connection.release()
+  }
+})
+
+// DELETE /api/sales/:id — hard-delete a voided sale
+router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+    const saleId = req.params.id
+
+    const [rows] = await connection.execute(
+      'SELECT id, status, invoice_number FROM sales WHERE id = ? AND company_id = ?',
+      [saleId, companyId]
+    )
+    if (rows.length === 0) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบบิลขาย' })
+    }
+    if (rows[0].status !== 'voided') {
+      await connection.rollback()
+      return res.status(400).json({ message: 'ลบได้เฉพาะบิลที่ยกเลิกแล้วเท่านั้น กรุณายกเลิกบิลก่อนลบ' })
+    }
+
+    // Check for linked sales documents
+    const [linkedDocs] = await connection.execute(
+      'SELECT id, doc_number FROM sales_documents WHERE sale_id = ? AND company_id = ?',
+      [saleId, companyId]
+    )
+    if (linkedDocs.length > 0) {
+      const nonVoided = linkedDocs.filter((d) => d.status !== 'voided')
+      if (nonVoided.length > 0) {
+        await connection.rollback()
+        return res.status(400).json({
+          message: `ไม่สามารถลบได้ บิลนี้มีเอกสารที่ยังไม่ได้ยกเลิก: ${nonVoided.map(d => d.doc_number).join(', ')}`
+        })
+      }
+      // Delete linked voided documents & their items
+      for (const doc of linkedDocs) {
+        await connection.execute('DELETE FROM sales_document_items WHERE document_id = ?', [doc.id])
+        await connection.execute('DELETE FROM sales_documents WHERE id = ?', [doc.id])
+      }
+    }
+
+    // Delete payments, sale_items (CASCADE), then sale
+    await connection.execute('DELETE FROM payments WHERE sale_id = ?', [saleId])
+    await connection.execute('DELETE FROM sale_items WHERE sale_id = ?', [saleId])
+    await connection.execute('DELETE FROM sales WHERE id = ? AND company_id = ?', [saleId, companyId])
+
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'DELETE', entityType: 'sale', entityId: saleId,
+      description: `ลบบิลขาย ${rows[0].invoice_number}`,
+      oldValues: { invoiceNumber: rows[0].invoice_number, status: rows[0].status },
+      req,
+    })
+
+    await connection.commit()
+
+    res.json({ message: 'ลบบิลสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete sale error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการลบบิล' })
   } finally {
     connection.release()
   }

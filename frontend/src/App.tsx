@@ -1,35 +1,64 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './stores/authStore'
 import Layout from './components/Layout/Layout'
-import LoginPage from './pages/LoginPage'
-import DashboardPage from './pages/DashboardPage'
-import POSPage from './pages/POSPage'
-import StockPage from './pages/StockPage'
-import ExpensePage from './pages/ExpensePage'
-import ExpenseCreatePage from './pages/ExpenseCreatePage'
-import CustomersPage from './pages/CustomersPage'
-import SuppliersContactPage from './pages/SuppliersContactPage'
-import OrdersPage from './pages/OrdersPage'
-import OrderCreatePage from './pages/OrderCreatePage'
-import OrderDetailPage from './pages/OrderDetailPage'
-import PurchasePage from './pages/PurchasePage'
-import PurchaseCreatePage from './pages/PurchaseCreatePage'
-import PurchaseDetailPage from './pages/PurchaseDetailPage'
-import SettingsPage from './pages/SettingsPage'
-import SalesPage from './pages/SalesPage'
-import WalletPage from './pages/WalletPage'
-import CreditNotesPage from './pages/CreditNotesPage'
-import AccountsPage from './pages/AccountsPage'
-import JournalsPage from './pages/JournalsPage'
-import TrialBalancePage from './pages/TrialBalancePage'
-import ProfitLossPage from './pages/ProfitLossPage'
-import BalanceSheetPage from './pages/BalanceSheetPage'
-import TaxSummaryPage from './pages/TaxSummaryPage'
-import SalesDocPage from './pages/SalesDocPage'
-import SalesDocCreatePage from './pages/SalesDocCreatePage'
-import ConsignmentPage from './pages/ConsignmentPage'
-import SalesReportsPage from './pages/SalesReportsPage'
-import InventoryReportPage from './pages/InventoryReportPage'
+
+// Auth & Dashboard
+import LoginPage from './pages/auth/LoginPage'
+import DashboardPage from './pages/dashboard/DashboardPage'
+
+// POS
+import POSPage from './pages/pos/POSPage'
+import CreditNotesPage from './pages/pos/CreditNotesPage'
+import ReturnsPage from './pages/pos/ReturnsPage'
+
+// Sales
+import SalesPage from './pages/sales/SalesPage'
+import SalesReportsPage from './pages/sales/SalesReportsPage'
+
+// Sales Documents
+import SalesDocPage from './pages/sales-doc/SalesDocPage'
+import SalesDocCreatePage from './pages/sales-doc/SalesDocCreatePage'
+import SalesDocDetailPage from './pages/sales-doc/SalesDocDetailPage'
+
+// Orders
+import OrdersPage from './pages/orders/OrdersPage'
+import OrderCreatePage from './pages/orders/OrderCreatePage'
+import OrderDetailPage from './pages/orders/OrderDetailPage'
+
+// Contacts
+import CustomersPage from './pages/contacts/CustomersPage'
+import SuppliersContactPage from './pages/contacts/SuppliersContactPage'
+
+// Purchases & Stock
+import PurchasePage from './pages/purchases/PurchasePage'
+import PurchaseCreatePage from './pages/purchases/PurchaseCreatePage'
+import PurchaseDetailPage from './pages/purchases/PurchaseDetailPage'
+import StockPage from './pages/stock/StockPage'
+import WarehousePage from './pages/stock/WarehousePage'
+import StocktakingPage from './pages/stock/StocktakingPage'
+import ConsignmentPage from './pages/consignment/ConsignmentPage'
+
+// Finance
+import ExpensePage from './pages/finance/ExpensePage'
+import ExpenseCreatePage from './pages/finance/ExpenseCreatePage'
+import WalletPage from './pages/finance/WalletPage'
+import WhtPage from './pages/finance/WhtPage'
+import BankReconciliationPage from './pages/finance/BankReconciliationPage'
+import CashFlowPage from './pages/finance/CashFlowPage'
+
+// Accounting
+import AccountsPage from './pages/accounting/AccountsPage'
+import JournalsPage from './pages/accounting/JournalsPage'
+import TrialBalancePage from './pages/accounting/TrialBalancePage'
+import ProfitLossPage from './pages/accounting/ProfitLossPage'
+import BalanceSheetPage from './pages/accounting/BalanceSheetPage'
+import TaxSummaryPage from './pages/accounting/TaxSummaryPage'
+
+// Reports
+import InventoryReportPage from './pages/reports/InventoryReportPage'
+
+// Settings
+import SettingsPage from './pages/settings/SettingsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -61,17 +90,24 @@ export default function App() {
         <Route path="orders" element={<OrdersPage />} />
         <Route path="wallet" element={<WalletPage />} />
         <Route path="credit-notes" element={<CreditNotesPage />} />
+        <Route path="returns" element={<ReturnsPage />} />
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="journals" element={<JournalsPage />} />
         <Route path="sales-doc" element={<SalesDocPage />} />
         <Route path="sales-doc/create" element={<SalesDocCreatePage />} />
+        <Route path="sales-doc/:id" element={<SalesDocDetailPage />} />
         <Route path="consignment" element={<ConsignmentPage />} />
+        <Route path="stocktaking" element={<StocktakingPage />} />
         <Route path="reports/sales" element={<SalesReportsPage />} />
         <Route path="reports/inventory" element={<InventoryReportPage />} />
+        <Route path="warehouse" element={<WarehousePage />} />
         <Route path="reports/trial-balance" element={<TrialBalancePage />} />
         <Route path="reports/pnl" element={<ProfitLossPage />} />
         <Route path="reports/balance-sheet" element={<BalanceSheetPage />} />
         <Route path="reports/tax" element={<TaxSummaryPage />} />
+        <Route path="reports/cashflow" element={<CashFlowPage />} />
+        <Route path="reconciliation" element={<BankReconciliationPage />} />
+        <Route path="wht" element={<WhtPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>

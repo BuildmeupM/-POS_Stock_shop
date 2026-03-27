@@ -2,16 +2,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo } from 'react'
 import {
   Table, Button, TextInput, Group, Modal, Stack, NumberInput, Select,
-  Text, Badge, Loader, SimpleGrid, ActionIcon, Tooltip
+  Text, Badge, Loader, SimpleGrid, ActionIcon, Tooltip, Image
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
   IconSearch, IconPlus, IconPackageImport, IconEdit, IconTrash,
   IconPackage, IconAlertTriangle, IconPackageOff, IconChecks, IconArrowDown,
-  IconFilter, IconSettings, IconX
+  IconFilter, IconSettings, IconX, IconPhoto, IconFileSpreadsheet, IconUpload, IconDownload
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { fmt } from '../../utils/formatters'
+import { downloadExcel, uploadProductsExcel } from '../../utils/exportHelpers'
 import { ATTR_COLORS } from '../../utils/constants'
 import ProductForm from './ProductForm'
 import AttrGroupsManager from './AttrGroupsManager'
@@ -37,10 +38,21 @@ export default function ProductsTab() {
   const [receiveModal, setReceiveModal] = useState(false)
   const [deleteModal, setDeleteModal] = useState(false)
   const [attrGroupsModal, setAttrGroupsModal] = useState(false)
+  const [importModal, setImportModal] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importResult, setImportResult] = useState<{ imported: number; updated: number; skipped: number; errors: string[] } | null>(null)
+  const [exportLoading, setExportLoading] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [form, setForm] = useState<ProductFormData>(emptyForm)
   const [receiveForm, setReceiveForm] = useState<ReceiveFormData>({ quantity: 0, costPerUnit: 0, note: '' })
+  const [editImageUrl, setEditImageUrl] = useState<string | null>(null)
+  const [pendingImageFile, setPendingImageFile] = useState<File | null>(null)
   const queryClient = useQueryClient()
+
+  /** Derive the backend base URL (without /api) from the axios instance */
+  const backendBase = '' // /uploads served via Vite proxy
+
 
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ['products', search],
@@ -60,9 +72,24 @@ export default function ProductsTab() {
   // --- Mutations ---
   const addMutation = useMutation({
     mutationFn: (data: ProductFormData) => api.post('/products', data),
-    onSuccess: () => {
-      notifications.show({ title: 'สำเร็จ', message: 'เพิ่มสินค้าสำเร็จ', color: 'green' })
-      setAddModal(false); setForm(emptyForm)
+    onSuccess: async (res) => {
+      const newProductId = res.data?.productId
+      // Auto-upload รูปที่เลือกไว้ (ถ้ามี)
+      if (pendingImageFile && newProductId) {
+        try {
+          const formData = new FormData()
+          formData.append('image', pendingImageFile)
+          await api.post(`/products/${newProductId}/image`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          })
+          notifications.show({ title: 'สำเร็จ', message: 'เพิ่มสินค้าและอัพโหลดรูปภาพสำเร็จ', color: 'green' })
+        } catch {
+          notifications.show({ title: 'เพิ่มสินค้าสำเร็จ', message: 'แต่อัพโหลดรูปภาพไม่สำเร็จ กรุณาลองใหม่ในหน้าแก้ไข', color: 'yellow' })
+        }
+      } else {
+        notifications.show({ title: 'สำเร็จ', message: 'เพิ่มสินค้าสำเร็จ', color: 'green' })
+      }
+      setAddModal(false); setForm(emptyForm); setPendingImageFile(null)
       queryClient.invalidateQueries({ queryKey: ['products'] })
     },
     onError: (err: ApiError) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถเพิ่มได้', color: 'red' }),
@@ -178,6 +205,7 @@ export default function ProductsTab() {
 
   const openEdit = (p: Product) => {
     setSelectedProduct(p)
+    setEditImageUrl(p.image_url || null)
     setForm({
       sku: p.sku, barcode: p.barcode || '', name: p.name, description: p.description || '',
       unit: p.unit || 'ชิ้น',
@@ -209,9 +237,19 @@ export default function ProductsTab() {
     const margin = sell > 0 ? ((sell - cost) / sell * 100) : 0
     const level = getStockLevel(stock, p.min_stock)
 
+    const thumbUrl = p.image_url ? `${backendBase}${p.image_url}` : null
+
     return (
       <Table.Tr key={p.id}>
         <Table.Td><Text size="sm" fw={600} ff="monospace">{p.sku}</Text></Table.Td>
+        <Table.Td ta="center">
+          {thumbUrl ? (
+            <Image src={thumbUrl} alt={p.name} w={36} h={36} radius="sm" fit="cover"
+              style={{ display: 'inline-block', border: '1px solid #e0e0e0' }} />
+          ) : (
+            <IconPhoto size={20} stroke={1.2} color="#ccc" />
+          )}
+        </Table.Td>
         <Table.Td>
           <Text size="sm" fw={500}>{p.name}</Text>
           {p.barcode && <Text size="xs" c="dimmed">Barcode: {p.barcode}</Text>}
@@ -284,6 +322,7 @@ export default function ProductsTab() {
     <Table.Thead>
       <Table.Tr>
         <Table.Th>SKU</Table.Th>
+        <Table.Th ta="center">รูป</Table.Th>
         <Table.Th>ชื่อสินค้า</Table.Th>
         <Table.Th>แอตทริบิวต์</Table.Th>
         <Table.Th ta="center">คงเหลือ</Table.Th>
@@ -363,6 +402,29 @@ export default function ProductsTab() {
           <ActionIcon size="lg" variant="light" color="violet" onClick={() => setAttrGroupsModal(true)}>
             <IconSettings size={18} />
           </ActionIcon>
+        </Tooltip>
+        <Tooltip label="ส่งออก Excel">
+          <Button variant="light" color="green" leftSection={<IconFileSpreadsheet size={16} />}
+            loading={exportLoading}
+            onClick={async () => {
+              try {
+                setExportLoading(true)
+                await downloadExcel('/exports/products', 'products.xlsx')
+                notifications.show({ title: 'สำเร็จ', message: 'ส่งออกข้อมูลสินค้าสำเร็จ', color: 'green' })
+              } catch {
+                notifications.show({ title: 'ผิดพลาด', message: 'ไม่สามารถส่งออกข้อมูลได้', color: 'red' })
+              } finally {
+                setExportLoading(false)
+              }
+            }}>
+            ส่งออก Excel
+          </Button>
+        </Tooltip>
+        <Tooltip label="นำเข้าสินค้าจาก Excel">
+          <Button variant="light" color="orange" leftSection={<IconUpload size={16} />}
+            onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true) }}>
+            นำเข้า Excel
+          </Button>
         </Tooltip>
         <Button leftSection={<IconPlus size={16} />} onClick={() => { setForm(emptyForm); setAddModal(true) }}>
           เพิ่มสินค้า
@@ -468,17 +530,22 @@ export default function ProductsTab() {
       )}
 
       {/* Add Product Modal */}
-      <Modal opened={addModal} onClose={() => setAddModal(false)} title="➕ เพิ่มสินค้าใหม่" size="lg">
+      <Modal opened={addModal} onClose={() => { setAddModal(false); setPendingImageFile(null) }} title="➕ เพิ่มสินค้าใหม่" size="lg">
         <ProductForm form={form} setForm={setForm} attrGroups={attrGroups || []}
           loading={addMutation.isPending}
-          onSubmit={() => addMutation.mutate(form)} submitLabel="เพิ่มสินค้า" />
+          onSubmit={() => addMutation.mutate(form)} submitLabel="เพิ่มสินค้า"
+          pendingFile={pendingImageFile}
+          onPendingFileChange={setPendingImageFile} />
       </Modal>
 
       {/* Edit Product Modal */}
       <Modal opened={editModal} onClose={() => setEditModal(false)} title={`✏️ แก้ไข: ${selectedProduct?.name}`} size="lg">
         <ProductForm form={form} setForm={setForm} attrGroups={attrGroups || []}
           loading={editMutation.isPending}
-          onSubmit={() => editMutation.mutate({ id: selectedProduct!.id, ...form })} submitLabel="บันทึกการแก้ไข" color="blue" />
+          onSubmit={() => editMutation.mutate({ id: selectedProduct!.id, ...form })} submitLabel="บันทึกการแก้ไข" color="blue"
+          productId={selectedProduct?.id || null}
+          imageUrl={editImageUrl}
+          onImageChange={(url) => { setEditImageUrl(url); queryClient.invalidateQueries({ queryKey: ['products'] }) }} />
       </Modal>
 
       {/* Receive Stock Modal */}
@@ -525,6 +592,107 @@ export default function ProductsTab() {
       <Modal opened={attrGroupsModal} onClose={() => setAttrGroupsModal(false)}
         title="⚙️ จัดการกลุ่มแอตทริบิวต์" size="lg">
         <AttrGroupsManager onClose={() => { setAttrGroupsModal(false); queryClient.invalidateQueries({ queryKey: ['attribute-groups'] }) }} />
+      </Modal>
+
+      {/* Import Products Modal */}
+      <Modal opened={importModal} onClose={() => setImportModal(false)} title="นำเข้าสินค้าจาก Excel" size="md">
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            อัปโหลดไฟล์ Excel (.xlsx) เพื่อนำเข้าสินค้า หากมี SKU ซ้ำจะอัพเดตข้อมูลเดิม
+          </Text>
+
+          <Button variant="subtle" color="blue" leftSection={<IconDownload size={16} />}
+            onClick={async () => {
+              try {
+                await downloadExcel('/exports/template/products', 'product-import-template.xlsx')
+              } catch {
+                notifications.show({ title: 'ผิดพลาด', message: 'ไม่สามารถดาวน์โหลดแบบฟอร์มได้', color: 'red' })
+              }
+            }}>
+            ดาวน์โหลดแบบฟอร์ม (Template)
+          </Button>
+
+          <div>
+            <Text size="sm" fw={500} mb={4}>เลือกไฟล์ Excel</Text>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setImportFile(file)
+                setImportResult(null)
+              }}
+              style={{ display: 'block', width: '100%' }}
+            />
+          </div>
+
+          {importFile && (
+            <Text size="sm" c="dimmed">
+              ไฟล์ที่เลือก: {importFile.name} ({(importFile.size / 1024).toFixed(1)} KB)
+            </Text>
+          )}
+
+          <Button
+            fullWidth
+            leftSection={<IconUpload size={18} />}
+            color="orange"
+            loading={importLoading}
+            disabled={!importFile}
+            onClick={async () => {
+              if (!importFile) return
+              try {
+                setImportLoading(true)
+                const result = await uploadProductsExcel(importFile)
+                setImportResult(result)
+                if (result.imported > 0 || result.updated > 0) {
+                  queryClient.invalidateQueries({ queryKey: ['products'] })
+                  notifications.show({
+                    title: 'นำเข้าสำเร็จ',
+                    message: `เพิ่มใหม่ ${result.imported} | อัพเดต ${result.updated} | ข้าม ${result.skipped}`,
+                    color: 'green',
+                  })
+                }
+              } catch (err: any) {
+                notifications.show({
+                  title: 'ผิดพลาด',
+                  message: err.response?.data?.message || 'ไม่สามารถนำเข้าสินค้าได้',
+                  color: 'red',
+                })
+              } finally {
+                setImportLoading(false)
+              }
+            }}>
+            นำเข้าสินค้า
+          </Button>
+
+          {importResult && (
+            <div style={{ background: 'var(--mantine-color-gray-0)', borderRadius: 8, padding: 12 }}>
+              <Text size="sm" fw={600} mb="xs">ผลการนำเข้า</Text>
+              <Group gap="lg">
+                <div>
+                  <Text size="xs" c="dimmed">เพิ่มใหม่</Text>
+                  <Text size="lg" fw={700} c="green">{importResult.imported}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed">อัพเดต</Text>
+                  <Text size="lg" fw={700} c="blue">{importResult.updated}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed">ข้าม</Text>
+                  <Text size="lg" fw={700} c="red">{importResult.skipped}</Text>
+                </div>
+              </Group>
+              {importResult.errors.length > 0 && (
+                <Stack gap={4} mt="sm">
+                  <Text size="xs" fw={600} c="red">รายการที่มีปัญหา:</Text>
+                  {importResult.errors.map((err, i) => (
+                    <Text key={i} size="xs" c="red">{err}</Text>
+                  ))}
+                </Stack>
+              )}
+            </div>
+          )}
+        </Stack>
       </Modal>
     </>
   )

@@ -180,7 +180,8 @@ router.get('/top-products', async (req, res) => {
     const params = [companyId]
     if (from) { query += ' AND s.sold_at >= ?'; params.push(from) }
     if (to) { query += ' AND s.sold_at <= ?'; params.push(to) }
-    query += ' GROUP BY p.id ORDER BY total_qty DESC LIMIT 10'
+    const limit = parseInt(req.query.limit) || 20
+    query += ` GROUP BY p.id ORDER BY total_qty DESC LIMIT ${limit}`
     res.json(await executeQuery(query, params))
   } catch (error) {
     console.error('Top products error:', error)
@@ -735,6 +736,221 @@ router.get('/inventory-valuation', async (req, res) => {
     })
   } catch (error) {
     console.error('Inventory valuation error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// ============================================================
+// CASH FLOW STATEMENT
+// ============================================================
+
+// GET /api/reports/cashflow — งบกระแสเงินสด
+router.get('/cashflow', async (req, res) => {
+  try {
+    const companyId = req.user.companyId
+    const { from, to } = req.query
+
+    let salesFilter = ''
+    let expenseFilter = ''
+    let purchaseFilter = ''
+    const salesParams = [companyId]
+    const expenseParams = [companyId]
+    const purchaseParams = [companyId]
+
+    if (from) {
+      salesFilter += ' AND s.sold_at >= ?'; salesParams.push(from)
+      expenseFilter += ' AND e.expense_date >= ?'; expenseParams.push(from)
+      purchaseFilter += ' AND pp.paid_at >= ?'; purchaseParams.push(from)
+    }
+    if (to) {
+      salesFilter += ' AND s.sold_at <= ?'; salesParams.push(to)
+      expenseFilter += ' AND e.expense_date <= ?'; expenseParams.push(to)
+      purchaseFilter += ' AND pp.paid_at <= ?'; purchaseParams.push(to)
+    }
+
+    // Operating: Cash from sales (completed sales)
+    const [salesCashRow] = await executeQuery(`
+      SELECT COALESCE(SUM(s.net_amount), 0) as total
+      FROM sales s
+      WHERE s.company_id = ? AND s.status = 'completed' ${salesFilter}
+    `, salesParams)
+
+    // Operating: Cash for expenses (approved expenses)
+    const [expensesCashRow] = await executeQuery(`
+      SELECT COALESCE(SUM(e.amount), 0) as total
+      FROM expenses e
+      WHERE e.company_id = ? AND e.status = 'approved' ${expenseFilter}
+    `, expenseParams)
+
+    // Investing: Purchase payments
+    const [purchasePaymentsRow] = await executeQuery(`
+      SELECT COALESCE(SUM(pp.amount), 0) as total
+      FROM purchase_payments pp
+      JOIN purchase_invoices pi2 ON pp.invoice_id = pi2.id
+      JOIN purchase_orders po ON pi2.po_id = po.id
+      WHERE po.company_id = ? ${purchaseFilter}
+    `, purchaseParams)
+
+    // Beginning cash: wallet balance at start of period
+    // We approximate using total wallet balances minus net changes in the period
+    const [walletBalance] = await executeQuery(`
+      SELECT COALESCE(SUM(pc.balance), 0) as total
+      FROM payment_channels pc
+      WHERE pc.company_id = ? AND pc.is_active = TRUE
+    `, [companyId])
+
+    const salesCash = parseFloat(salesCashRow.total) || 0
+    const expensesCash = parseFloat(expensesCashRow.total) || 0
+    const purchasePayments = parseFloat(purchasePaymentsRow.total) || 0
+    const netOperating = salesCash - expensesCash
+    const netInvesting = -purchasePayments
+    const netFinancing = 0
+    const netChange = netOperating + netInvesting + netFinancing
+    const currentBalance = parseFloat(walletBalance.total) || 0
+    const beginningCash = currentBalance - netChange
+    const endingCash = currentBalance
+
+    res.json({
+      period: { from: from || null, to: to || null },
+      operating: {
+        salesCash,
+        expensesCash: -expensesCash,
+        netOperating,
+      },
+      investing: {
+        purchasePayments: -purchasePayments,
+        netInvesting,
+      },
+      financing: {
+        netFinancing,
+      },
+      netChange,
+      beginningCash,
+      endingCash,
+    })
+  } catch (error) {
+    console.error('Cash flow error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// ============================================================
+// ENHANCED SALES REPORTS
+// ============================================================
+
+// GET /api/reports/sales-by-hour — ยอดขายตามชั่วโมง
+router.get('/sales-by-hour', async (req, res) => {
+  try {
+    const { from, to } = req.query
+    const companyId = req.user.companyId
+    let filter = ''
+    const params = [companyId]
+    if (from) { filter += ' AND s.sold_at >= ?'; params.push(from) }
+    if (to) { filter += ' AND s.sold_at <= ?'; params.push(to) }
+
+    const rows = await executeQuery(`
+      SELECT HOUR(s.sold_at) as hour,
+        COUNT(*) as sale_count,
+        COALESCE(SUM(s.net_amount), 0) as total_revenue
+      FROM sales s
+      WHERE s.company_id = ? AND s.status = 'completed' ${filter}
+      GROUP BY HOUR(s.sold_at)
+      ORDER BY hour ASC
+    `, params)
+    res.json(rows)
+  } catch (error) {
+    console.error('Sales by hour error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// GET /api/reports/sales-by-payment — ยอดขายตามวิธีชำระเงิน
+router.get('/sales-by-payment', async (req, res) => {
+  try {
+    const { from, to } = req.query
+    const companyId = req.user.companyId
+    let filter = ''
+    const params = [companyId]
+    if (from) { filter += ' AND s.sold_at >= ?'; params.push(from) }
+    if (to) { filter += ' AND s.sold_at <= ?'; params.push(to) }
+
+    const rows = await executeQuery(`
+      SELECT s.payment_method,
+        COUNT(*) as sale_count,
+        COALESCE(SUM(s.net_amount), 0) as total_revenue
+      FROM sales s
+      WHERE s.company_id = ? AND s.status = 'completed' ${filter}
+      GROUP BY s.payment_method
+      ORDER BY total_revenue DESC
+    `, params)
+    res.json(rows)
+  } catch (error) {
+    console.error('Sales by payment error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// GET /api/reports/consignment — รายงานฝากขาย
+router.get('/consignment', async (req, res) => {
+  try {
+    const companyId = req.user.companyId
+
+    // Summary by agreement
+    const byAgreement = await executeQuery(`
+      SELECT ca.id, ca.agreement_number, c.name as contact_name,
+        ca.commission_type, ca.commission_rate, ca.status,
+        COALESCE(SUM(cs.quantity_received), 0) as total_received,
+        COALESCE(SUM(cs.quantity_sold), 0) as total_sold,
+        COALESCE(SUM(cs.quantity_returned), 0) as total_returned,
+        COALESCE(SUM(cs.quantity_on_hand), 0) as total_on_hand,
+        COALESCE(SUM(cs.quantity_sold * cs.selling_price), 0) as revenue,
+        COALESCE(SUM(cs.quantity_sold * cs.consignor_price), 0) as cost,
+        COALESCE(SUM(cs.quantity_on_hand * cs.selling_price), 0) as unsold_value
+      FROM consignment_agreements ca
+      LEFT JOIN consignment_stock cs ON ca.id = cs.agreement_id
+      JOIN contacts c ON ca.contact_id = c.id
+      WHERE ca.company_id = ?
+      GROUP BY ca.id ORDER BY ca.created_at DESC`, [companyId])
+
+    // Commission earned (from transactions)
+    const [commissionTotal] = await executeQuery(`
+      SELECT COALESCE(SUM(ct.commission_amount), 0) as total
+      FROM consignment_transactions ct
+      JOIN consignment_agreements ca ON ct.agreement_id = ca.id
+      WHERE ca.company_id = ? AND ct.type = 'SALE'`, [companyId])
+
+    // Unpaid settlements
+    const unpaidSettlements = await executeQuery(`
+      SELECT cs.*, ca.agreement_number, c.name as contact_name,
+        DATEDIFF(NOW(), cs.period_to) as days_overdue
+      FROM consignment_settlements cs
+      JOIN consignment_agreements ca ON cs.agreement_id = ca.id
+      JOIN contacts c ON ca.contact_id = c.id
+      WHERE cs.company_id = ? AND cs.status != 'paid'
+      ORDER BY cs.period_to ASC`, [companyId])
+
+    // Slow-moving consignment stock (on-hand > 0, no sale in last 30 days)
+    const slowMoving = await executeQuery(`
+      SELECT cs.*, p.name as product_name, p.sku, ca.agreement_number, c.name as contact_name,
+        DATEDIFF(NOW(), cs.received_at) as days_since_received,
+        (SELECT MAX(ct2.created_at) FROM consignment_transactions ct2
+         WHERE ct2.agreement_id = cs.agreement_id AND ct2.product_id = cs.product_id AND ct2.type = 'SALE') as last_sale_date
+      FROM consignment_stock cs
+      JOIN products p ON cs.product_id = p.id
+      JOIN consignment_agreements ca ON cs.agreement_id = ca.id
+      JOIN contacts c ON ca.contact_id = c.id
+      WHERE ca.company_id = ? AND cs.quantity_on_hand > 0
+      HAVING last_sale_date IS NULL OR DATEDIFF(NOW(), last_sale_date) > 30
+      ORDER BY days_since_received DESC`, [companyId])
+
+    res.json({
+      byAgreement,
+      totalCommission: parseFloat(commissionTotal.total) || 0,
+      unpaidSettlements,
+      slowMoving,
+    })
+  } catch (error) {
+    console.error('Consignment report error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
   }
 })

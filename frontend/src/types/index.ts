@@ -12,9 +12,12 @@ export interface Product {
   barcode?: string
   name: string
   description?: string
+  image_url?: string
   unit: string
   cost_price: string
   selling_price: string
+  wholesale_price?: string
+  vip_price?: string
   min_selling_price?: string
   min_stock: number
   total_stock: string
@@ -140,6 +143,25 @@ export interface Contact {
   email?: string
   tax_id?: string
   address?: string
+  points_balance?: number
+  price_level?: 'retail' | 'wholesale' | 'vip'
+}
+
+// ============================================================
+// Loyalty
+// ============================================================
+export interface LoyaltyTransaction {
+  id: number
+  company_id: number
+  contact_id: number
+  sale_id?: number
+  type: 'earn' | 'redeem' | 'adjust' | 'expire'
+  points: number
+  balance_after: number
+  description?: string
+  created_by?: number
+  created_by_name?: string
+  created_at: string
 }
 
 // ============================================================
@@ -275,6 +297,7 @@ export interface Sale {
   discount_amount: string
   vat_amount: string
   net_amount: string
+  linked_doc_refs?: string
   items?: SaleItem[]
   payments?: SalePayment[]
 }
@@ -384,5 +407,184 @@ export interface Company {
   email?: string
   tax_id?: string
   logo_url?: string
+}
+
+// ============================================================
+// Sale Returns
+// ============================================================
+export interface SaleReturn {
+  id: number
+  return_number: string
+  sale_id: number
+  invoice_number?: string
+  customer_name?: string
+  return_date: string
+  reason?: string
+  status: string
+  subtotal: string
+  vat_amount: string
+  net_amount: string
+  refund_method: string
+  refund_amount: string
+  created_by_name?: string
+  created_at?: string
+  items?: SaleReturnItem[]
+}
+
+export interface SaleReturnItem {
+  id: number
+  sale_item_id?: number
+  product_id: number
+  product_name: string
+  sku: string
+  quantity: number
+  unit_price: string
+  cost_price?: string
+  discount: string
+  subtotal: string
+  restock: boolean
+}
+
+export interface SaleForReturn {
+  id: number
+  invoice_number: string
+  sold_at: string
+  net_amount: string
+  total_amount: string
+  customer_name?: string
+  customer_id?: number
+  items: SaleItemForReturn[]
+}
+
+export interface SaleItemForReturn {
+  id: number
+  product_id: number
+  product_name: string
+  sku: string
+  quantity: number
+  unit_price: string
+  cost_price: string
+  discount: string
+  subtotal: string
+  returned_quantity: number
+  returnable_quantity: number
+}
+
+// ============================================================
+// WHT Certificate (หนังสือรับรองหัก ณ ที่จ่าย)
+// ============================================================
+export interface WhtCertificate {
+  id: number
+  certificate_number: string
+  form_type: string
+  contact_id: number
+  contact_name?: string
+  contact_tax_id?: string
+  contact_address?: string
+  contact_phone?: string
+  expense_id?: number
+  payment_date: string
+  income_type: string
+  income_description?: string
+  paid_amount: string
+  wht_rate: string
+  wht_amount: string
+  tax_month: number
+  tax_year: number
+  status: string
+  created_by?: number
+  created_by_name?: string
+  created_at?: string
+}
+
+// ============================================================
+// Cash Flow Statement
+// ============================================================
+export interface CashFlowData {
+  period: { from: string | null; to: string | null }
+  operating: {
+    salesCash: number
+    expensesCash: number
+    netOperating: number
+  }
+  investing: {
+    purchasePayments: number
+    netInvesting: number
+  }
+  financing: {
+    netFinancing: number
+  }
+  netChange: number
+  beginningCash: number
+  endingCash: number
+}
+
+// ============================================================
+// Bank Reconciliation
+// ============================================================
+export interface BankReconciliation {
+  id: number
+  company_id: number
+  channel_id: number
+  channel_name: string
+  channel_type: string
+  period_from: string
+  period_to: string
+  statement_balance: string
+  system_balance: string
+  difference: string
+  status: 'draft' | 'reconciled'
+  note: string | null
+  reconciled_by: number | null
+  reconciled_by_name: string | null
+  reconciled_at: string | null
+  created_at: string
+}
+
+// ============================================================
+// Sales Report Types
+// ============================================================
+export interface SalesByHour {
+  hour: number
+  sale_count: number
+  total_revenue: string
+}
+
+export interface SalesByPayment {
+  payment_method: string
+  sale_count: number
+  total_revenue: string
+}
+
+// ============================================================
+// Stocktaking / Stock Count
+// ============================================================
+export interface StockCount {
+  id: number
+  count_number: string
+  warehouse_id: number
+  warehouse_name: string
+  count_date: string
+  status: string
+  note?: string
+  total_items: number
+  total_variance_qty: number
+  total_variance_value: string
+  created_by_name?: string
+  created_at: string
+  items?: StockCountItem[]
+}
+
+export interface StockCountItem {
+  id: number
+  product_id: number
+  product_name: string
+  sku: string
+  system_qty: number
+  counted_qty: number | null
+  variance_qty: number
+  cost_per_unit: string
+  variance_value: string
+  note?: string
 }
 

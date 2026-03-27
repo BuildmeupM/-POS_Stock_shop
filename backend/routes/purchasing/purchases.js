@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const { pool, executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry } = require('../../utils/journal')
 const { validate } = require('../../middleware/validate')
@@ -28,29 +28,54 @@ async function getVatRate(companyId) {
 // GET /api/purchases — list POs
 router.get('/', async (req, res) => {
   try {
-    const { status, contactId, from, to, search } = req.query
-    let query = `
-      SELECT po.*, c.name as contact_name,
-        u.full_name as created_by_name,
-        (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count
-      FROM purchase_orders po
-      LEFT JOIN contacts c ON po.contact_id = c.id
-      LEFT JOIN users u ON po.created_by = u.id
-      WHERE po.company_id = ?`
-    const params = [req.user.companyId]
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
 
-    if (status) { query += ' AND po.status = ?'; params.push(status) }
-    if (contactId) { query += ' AND po.contact_id = ?'; params.push(contactId) }
-    if (from) { query += ' AND po.order_date >= ?'; params.push(from) }
-    if (to) { query += ' AND po.order_date <= ?'; params.push(to) }
+    const { status, contactId, from, to, search } = req.query
+    let whereClause = 'WHERE po.company_id = ?'
+    const baseParams = [req.user.companyId]
+
+    if (status) { whereClause += ' AND po.status = ?'; baseParams.push(status) }
+    if (contactId) { whereClause += ' AND po.contact_id = ?'; baseParams.push(contactId) }
+    if (from) { whereClause += ' AND po.order_date >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND po.order_date <= ?'; baseParams.push(to) }
     if (search) {
-      query += ' AND (po.po_number LIKE ? OR c.name LIKE ?)'
-      params.push(`%${search}%`, `%${search}%`)
+      whereClause += ' AND (po.po_number LIKE ? OR c.name LIKE ?)'
+      baseParams.push(`%${search}%`, `%${search}%`)
     }
 
-    query += ' ORDER BY po.created_at DESC'
-    const orders = await executeQuery(query, params)
-    res.json(orders)
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM purchase_orders po LEFT JOIN contacts c ON po.contact_id = c.id ${whereClause}`,
+        baseParams
+      )
+      const total = countResult.total
+
+      const orders = await executeQuery(
+        `SELECT po.*, c.name as contact_name,
+          u.full_name as created_by_name,
+          (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count
+        FROM purchase_orders po
+        LEFT JOIN contacts c ON po.contact_id = c.id
+        LEFT JOIN users u ON po.created_by = u.id
+        ${whereClause} ORDER BY po.created_at DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: orders, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const orders = await executeQuery(
+        `SELECT po.*, c.name as contact_name,
+          u.full_name as created_by_name,
+          (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count
+        FROM purchase_orders po
+        LEFT JOIN contacts c ON po.contact_id = c.id
+        LEFT JOIN users u ON po.created_by = u.id
+        ${whereClause} ORDER BY po.created_at DESC LIMIT 500`,
+        baseParams
+      )
+      res.json(orders)
+    }
   } catch (error) {
     console.error('Get POs error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -92,7 +117,7 @@ router.get('/:id', async (req, res) => {
 })
 
 // POST /api/purchases — create PO
-router.post('/', validate(createPOSchema), async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager'), validate(createPOSchema), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -138,7 +163,7 @@ router.post('/', validate(createPOSchema), async (req, res) => {
 })
 
 // PUT /api/purchases/:id — edit PO (only draft/approved)
-router.put('/:id', async (req, res) => {
+router.put('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -210,7 +235,7 @@ router.put('/:id', async (req, res) => {
 })
 
 // DELETE /api/purchases/:id — delete PO (only draft)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -240,7 +265,7 @@ router.delete('/:id', async (req, res) => {
 })
 
 // PUT /api/purchases/:id/status — update PO status
-router.put('/:id/status', async (req, res) => {
+router.put('/:id/status', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   try {
     const { status } = req.body
     const validStatuses = ['draft', 'approved', 'cancelled']
@@ -271,7 +296,7 @@ router.put('/:id/status', async (req, res) => {
 })
 
 // POST /api/purchases/:id/revert — revert PO status (undo last step)
-router.post('/:id/revert', async (req, res) => {
+router.post('/:id/revert', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -402,20 +427,46 @@ router.post('/:id/revert', async (req, res) => {
 // GET /api/purchases/receipts/all — list GRNs
 router.get('/receipts/all', async (req, res) => {
   try {
-    const grns = await executeQuery(
-      `SELECT gr.*, po.po_number, c.name as contact_name, w.name as warehouse_name,
-        u.full_name as created_by_name,
-        (SELECT COUNT(*) FROM goods_receipt_items WHERE grn_id = gr.id) as item_count
-       FROM goods_receipts gr
-       JOIN purchase_orders po ON gr.po_id = po.id
-       LEFT JOIN contacts c ON po.contact_id = c.id
-       JOIN warehouses w ON gr.warehouse_id = w.id
-       LEFT JOIN users u ON gr.created_by = u.id
-       WHERE gr.company_id = ?
-       ORDER BY gr.created_at DESC`,
-      [req.user.companyId]
-    )
-    res.json(grns)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        'SELECT COUNT(*) as total FROM goods_receipts WHERE company_id = ?', [req.user.companyId]
+      )
+      const total = countResult.total
+
+      const grns = await executeQuery(
+        `SELECT gr.*, po.po_number, c.name as contact_name, w.name as warehouse_name,
+          u.full_name as created_by_name,
+          (SELECT COUNT(*) FROM goods_receipt_items WHERE grn_id = gr.id) as item_count
+         FROM goods_receipts gr
+         JOIN purchase_orders po ON gr.po_id = po.id
+         LEFT JOIN contacts c ON po.contact_id = c.id
+         JOIN warehouses w ON gr.warehouse_id = w.id
+         LEFT JOIN users u ON gr.created_by = u.id
+         WHERE gr.company_id = ?
+         ORDER BY gr.created_at DESC LIMIT ? OFFSET ?`,
+        [req.user.companyId, limit, offset]
+      )
+      res.json({ data: grns, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const grns = await executeQuery(
+        `SELECT gr.*, po.po_number, c.name as contact_name, w.name as warehouse_name,
+          u.full_name as created_by_name,
+          (SELECT COUNT(*) FROM goods_receipt_items WHERE grn_id = gr.id) as item_count
+         FROM goods_receipts gr
+         JOIN purchase_orders po ON gr.po_id = po.id
+         LEFT JOIN contacts c ON po.contact_id = c.id
+         JOIN warehouses w ON gr.warehouse_id = w.id
+         LEFT JOIN users u ON gr.created_by = u.id
+         WHERE gr.company_id = ?
+         ORDER BY gr.created_at DESC LIMIT 500`,
+        [req.user.companyId]
+      )
+      res.json(grns)
+    }
   } catch (error) {
     console.error('Get GRNs error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -423,7 +474,7 @@ router.get('/receipts/all', async (req, res) => {
 })
 
 // POST /api/purchases/receipts — create goods receipt
-router.post('/receipts', async (req, res) => {
+router.post('/receipts', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -584,19 +635,44 @@ router.post('/receipts', async (req, res) => {
 // GET /api/purchases/invoices/all — list invoices
 router.get('/invoices/all', async (req, res) => {
   try {
-    const invoices = await executeQuery(
-      `SELECT pi.*, po.po_number, c.name as contact_name,
-        gr.grn_number, u.full_name as created_by_name
-       FROM purchase_invoices pi
-       JOIN purchase_orders po ON pi.po_id = po.id
-       LEFT JOIN contacts c ON pi.contact_id = c.id
-       JOIN goods_receipts gr ON pi.grn_id = gr.id
-       LEFT JOIN users u ON pi.created_by = u.id
-       WHERE pi.company_id = ?
-       ORDER BY pi.created_at DESC`,
-      [req.user.companyId]
-    )
-    res.json(invoices)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        'SELECT COUNT(*) as total FROM purchase_invoices WHERE company_id = ?', [req.user.companyId]
+      )
+      const total = countResult.total
+
+      const invoices = await executeQuery(
+        `SELECT pi.*, po.po_number, c.name as contact_name,
+          gr.grn_number, u.full_name as created_by_name
+         FROM purchase_invoices pi
+         JOIN purchase_orders po ON pi.po_id = po.id
+         LEFT JOIN contacts c ON pi.contact_id = c.id
+         JOIN goods_receipts gr ON pi.grn_id = gr.id
+         LEFT JOIN users u ON pi.created_by = u.id
+         WHERE pi.company_id = ?
+         ORDER BY pi.created_at DESC LIMIT ? OFFSET ?`,
+        [req.user.companyId, limit, offset]
+      )
+      res.json({ data: invoices, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const invoices = await executeQuery(
+        `SELECT pi.*, po.po_number, c.name as contact_name,
+          gr.grn_number, u.full_name as created_by_name
+         FROM purchase_invoices pi
+         JOIN purchase_orders po ON pi.po_id = po.id
+         LEFT JOIN contacts c ON pi.contact_id = c.id
+         JOIN goods_receipts gr ON pi.grn_id = gr.id
+         LEFT JOIN users u ON pi.created_by = u.id
+         WHERE pi.company_id = ?
+         ORDER BY pi.created_at DESC LIMIT 500`,
+        [req.user.companyId]
+      )
+      res.json(invoices)
+    }
   } catch (error) {
     console.error('Get invoices error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -642,20 +718,46 @@ router.get('/invoices/:id', async (req, res) => {
 // GET /api/purchases/payments/all — list payments
 router.get('/payments/all', async (req, res) => {
   try {
-    const payments = await executeQuery(
-      `SELECT pp.*, pi.invoice_number, pi.total_amount as invoice_total,
-        po.po_number, c.name as contact_name,
-        u.full_name as created_by_name
-       FROM purchase_payments pp
-       JOIN purchase_invoices pi ON pp.invoice_id = pi.id
-       JOIN purchase_orders po ON pi.po_id = po.id
-       LEFT JOIN contacts c ON pi.contact_id = c.id
-       LEFT JOIN users u ON pp.created_by = u.id
-       WHERE pp.company_id = ?
-       ORDER BY pp.created_at DESC`,
-      [req.user.companyId]
-    )
-    res.json(payments)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        'SELECT COUNT(*) as total FROM purchase_payments WHERE company_id = ?', [req.user.companyId]
+      )
+      const total = countResult.total
+
+      const payments = await executeQuery(
+        `SELECT pp.*, pi.invoice_number, pi.total_amount as invoice_total,
+          po.po_number, c.name as contact_name,
+          u.full_name as created_by_name
+         FROM purchase_payments pp
+         JOIN purchase_invoices pi ON pp.invoice_id = pi.id
+         JOIN purchase_orders po ON pi.po_id = po.id
+         LEFT JOIN contacts c ON pi.contact_id = c.id
+         LEFT JOIN users u ON pp.created_by = u.id
+         WHERE pp.company_id = ?
+         ORDER BY pp.created_at DESC LIMIT ? OFFSET ?`,
+        [req.user.companyId, limit, offset]
+      )
+      res.json({ data: payments, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const payments = await executeQuery(
+        `SELECT pp.*, pi.invoice_number, pi.total_amount as invoice_total,
+          po.po_number, c.name as contact_name,
+          u.full_name as created_by_name
+         FROM purchase_payments pp
+         JOIN purchase_invoices pi ON pp.invoice_id = pi.id
+         JOIN purchase_orders po ON pi.po_id = po.id
+         LEFT JOIN contacts c ON pi.contact_id = c.id
+         LEFT JOIN users u ON pp.created_by = u.id
+         WHERE pp.company_id = ?
+         ORDER BY pp.created_at DESC LIMIT 500`,
+        [req.user.companyId]
+      )
+      res.json(payments)
+    }
   } catch (error) {
     console.error('Get payments error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -663,7 +765,7 @@ router.get('/payments/all', async (req, res) => {
 })
 
 // POST /api/purchases/payments — create payment
-router.post('/payments', async (req, res) => {
+router.post('/payments', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()

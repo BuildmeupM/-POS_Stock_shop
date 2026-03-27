@@ -29,14 +29,38 @@ router.get('/current', async (req, res) => {
 // GET /api/companies — list user's companies
 router.get('/', async (req, res) => {
   try {
-    const companies = await executeQuery(
-      `SELECT uc.company_id, uc.role, uc.is_default, c.*
-       FROM user_companies uc
-       JOIN companies c ON uc.company_id = c.id
-       WHERE uc.user_id = ? AND c.is_active = TRUE`,
-      [req.user.id]
-    )
-    res.json(companies)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    const baseWhere = 'WHERE uc.user_id = ? AND c.is_active = TRUE'
+    const baseParams = [req.user.id]
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM user_companies uc JOIN companies c ON uc.company_id = c.id ${baseWhere}`,
+        baseParams
+      )
+      const total = countResult.total
+
+      const companies = await executeQuery(
+        `SELECT uc.company_id, uc.role, uc.is_default, c.*
+         FROM user_companies uc
+         JOIN companies c ON uc.company_id = c.id
+         ${baseWhere} LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: companies, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const companies = await executeQuery(
+        `SELECT uc.company_id, uc.role, uc.is_default, c.*
+         FROM user_companies uc
+         JOIN companies c ON uc.company_id = c.id
+         ${baseWhere} LIMIT 500`,
+        baseParams
+      )
+      res.json(companies)
+    }
   } catch (error) {
     console.error('Get companies error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })

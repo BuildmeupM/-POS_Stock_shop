@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const { pool, executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry, voidJournalEntry } = require('../../utils/journal')
 
@@ -20,32 +20,60 @@ async function getCompanyVatRate(companyId) {
 }
 
 // Doc type prefixes
-const DOC_PREFIX = { quotation: 'QT', invoice: 'IV', receipt: 'RC', delivery: 'DN' }
+const DOC_PREFIX = {
+  quotation: 'QT', invoice: 'IV', receipt: 'RC', receipt_tax: 'RT',
+  delivery: 'DN', receipt_abb: 'RA', debit_note: 'DB', credit_note: 'CN'
+}
 
 // =============================================
 // GET /api/sales-doc — list documents
 // =============================================
 router.get('/', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { docType, status, from, to, customerId } = req.query
-    let query = `
-      SELECT sd.*, c.name as customer_name_ref, u.full_name as salesperson_name,
-        cu.full_name as created_by_name
-      FROM sales_documents sd
-      LEFT JOIN customers c ON sd.customer_id = c.id
-      LEFT JOIN users u ON sd.salesperson_id = u.id
-      LEFT JOIN users cu ON sd.created_by = cu.id
-      WHERE sd.company_id = ?`
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE sd.company_id = ?'
+    const baseParams = [req.user.companyId]
 
-    if (docType) { query += ' AND sd.doc_type = ?'; params.push(docType) }
-    if (status) { query += ' AND sd.status = ?'; params.push(status) }
-    if (from) { query += ' AND sd.doc_date >= ?'; params.push(from) }
-    if (to) { query += ' AND sd.doc_date <= ?'; params.push(to) }
-    if (customerId) { query += ' AND sd.customer_id = ?'; params.push(customerId) }
+    if (docType) { whereClause += ' AND sd.doc_type = ?'; baseParams.push(docType) }
+    if (status) { whereClause += ' AND sd.status = ?'; baseParams.push(status) }
+    if (from) { whereClause += ' AND sd.doc_date >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND sd.doc_date <= ?'; baseParams.push(to) }
+    if (customerId) { whereClause += ' AND sd.customer_id = ?'; baseParams.push(customerId) }
 
-    query += ' ORDER BY sd.created_at DESC LIMIT 200'
-    res.json(await executeQuery(query, params))
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM sales_documents sd ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const rows = await executeQuery(
+        `SELECT sd.*, c.name as customer_name_ref, u.full_name as salesperson_name,
+          cu.full_name as created_by_name
+        FROM sales_documents sd
+        LEFT JOIN customers c ON sd.customer_id = c.id
+        LEFT JOIN users u ON sd.salesperson_id = u.id
+        LEFT JOIN users cu ON sd.created_by = cu.id
+        ${whereClause} ORDER BY sd.created_at DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const rows = await executeQuery(
+        `SELECT sd.*, c.name as customer_name_ref, u.full_name as salesperson_name,
+          cu.full_name as created_by_name
+        FROM sales_documents sd
+        LEFT JOIN customers c ON sd.customer_id = c.id
+        LEFT JOIN users u ON sd.salesperson_id = u.id
+        LEFT JOIN users cu ON sd.created_by = cu.id
+        ${whereClause} ORDER BY sd.created_at DESC LIMIT 500`,
+        baseParams
+      )
+      res.json(rows)
+    }
   } catch (error) {
     console.error('List sales docs error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -86,13 +114,13 @@ router.get('/:id', async (req, res) => {
 // =============================================
 // POST /api/sales-doc — create document
 // =============================================
-router.post('/', async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
     const companyId = req.user.companyId
     const {
-      docType, reference, customerId, customerName, customerAddress, customerTaxId,
+      docType, reference, saleId, customerId, customerName, customerAddress, customerTaxId,
       customerPhone, customerEmail, docDate, dueDate, validUntil,
       priceType, discountAmount, salespersonId, note, internalNote,
       items, status: docStatus,
@@ -105,6 +133,32 @@ router.post('/', async (req, res) => {
     const prefix = DOC_PREFIX[docType] || 'IV'
     const docNumber = await generateDocNumber(prefix, companyId, 'sales_documents', 'doc_number')
     const vatRate = await getCompanyVatRate(companyId)
+
+    // === Validate min_selling_price for each product item ===
+    for (const item of items) {
+      if (!item.productId) continue
+      const [prodRows] = await connection.execute(
+        'SELECT name, min_selling_price FROM products WHERE id = ? AND company_id = ?',
+        [item.productId, companyId]
+      )
+      if (prodRows.length === 0) continue
+      const prod = prodRows[0]
+      const minPrice = parseFloat(prod.min_selling_price) || 0
+      if (minPrice <= 0) continue
+
+      const listPrice = parseFloat(item.unitPrice) || 0
+      const discPerUnit = item.discountType === 'percent'
+        ? listPrice * (parseFloat(item.discountPerUnit) || 0) / 100
+        : parseFloat(item.discountPerUnit) || 0
+      const effectivePrice = listPrice - discPerUnit
+
+      if (effectivePrice < minPrice) {
+        await connection.rollback()
+        return res.status(400).json({
+          message: `ราคาขายสินค้า "${prod.name}" ต่ำกว่าราคาขายขั้นต่ำ (ขั้นต่ำ: ฿${minPrice.toFixed(2)}, ที่ขาย: ฿${effectivePrice.toFixed(2)})`
+        })
+      }
+    }
 
     // Calculate items
     let subtotal = 0
@@ -140,6 +194,7 @@ router.post('/', async (req, res) => {
       return { ...item, quantity: qty, unitPrice: price, discountPerUnit: actualDisc, subtotal: lineTotal }
     })
 
+
     const discount = parseFloat(discountAmount) || 0
     const amountBeforeVat = priceType === 'include_vat' ? (subtotal - totalVat - discount) : (subtotal - discount)
     const finalVat = priceType === 'no_vat' ? 0 : totalVat
@@ -148,13 +203,13 @@ router.post('/', async (req, res) => {
 
     // Insert document
     const [docResult] = await connection.execute(
-      `INSERT INTO sales_documents (company_id, doc_type, doc_number, reference,
+      `INSERT INTO sales_documents (company_id, doc_type, doc_number, reference, sale_id,
         customer_id, customer_name, customer_address, customer_tax_id, customer_phone, customer_email,
         doc_date, due_date, valid_until, price_type,
         subtotal, discount_amount, amount_before_vat, vat_rate, vat_amount, wht_amount, total_amount,
         status, salesperson_id, note, internal_note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [companyId, docType, docNumber, reference || null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [companyId, docType, docNumber, reference || null, saleId || null,
         customerId || null, customerName || null, customerAddress || null,
         customerTaxId || null, customerPhone || null, customerEmail || null,
         docDate || new Date().toISOString().slice(0, 10), dueDate || null, validUntil || null,
@@ -178,7 +233,8 @@ router.post('/', async (req, res) => {
     }
 
     // Auto-journal for approved invoice/receipt
-    if (finalStatus === 'approved' && (docType === 'invoice' || docType === 'receipt')) {
+    const journalDocTypes = ['invoice', 'receipt', 'receipt_tax', 'receipt_abb']
+    if (finalStatus === 'approved' && journalDocTypes.includes(docType)) {
       const journalLines = [
         { accountCode: '1110', debit: totalAmount, credit: 0, description: `ลูกหนี้ ${docNumber}` },
         { accountCode: '4100', debit: 0, credit: amountBeforeVat, description: `รายได้ ${docNumber}` },
@@ -187,9 +243,13 @@ router.post('/', async (req, res) => {
         journalLines.push({ accountCode: '2120', debit: 0, credit: finalVat, description: `ภาษีขาย ${docNumber}` })
       }
 
+      const docTypeNames = {
+        invoice: 'ใบแจ้งหนี้', receipt_tax: 'ใบเสร็จ/ใบกำกับภาษี',
+        receipt_abb: 'ใบกำกับภาษีอย่างย่อ', receipt: 'ใบเสร็จ',
+      }
       const journalId = await createJournalEntry(connection, {
         companyId, entryDate: docDate || new Date().toISOString().slice(0, 10),
-        description: `${docType === 'invoice' ? 'ใบแจ้งหนี้' : 'ใบเสร็จ'} ${docNumber}`,
+        description: `${docTypeNames[docType] || 'เอกสาร'} ${docNumber}`,
         referenceType: 'SALES_DOC', referenceId: docId, createdBy: req.user.id,
         lines: journalLines,
       })
@@ -197,6 +257,15 @@ router.post('/', async (req, res) => {
       if (journalId) {
         await connection.execute('UPDATE sales_documents SET journal_entry_id = ? WHERE id = ?', [journalId, docId])
       }
+    }
+
+    // Handle immediate payment if payNow flag is set
+    const { payNow, paymentMethod: payMethod, paymentChannelId: payChId } = req.body
+    if (payNow && finalStatus === 'approved') {
+      await connection.execute(
+        `UPDATE sales_documents SET paid_amount = ?, payment_status = 'paid', payment_method = ?, payment_channel_id = ?, paid_at = NOW() WHERE id = ?`,
+        [totalAmount, payMethod || 'cash', payChId || null, docId]
+      )
     }
 
     await connection.commit()
@@ -213,7 +282,7 @@ router.post('/', async (req, res) => {
 // =============================================
 // PUT /api/sales-doc/:id/approve — อนุมัติเอกสาร
 // =============================================
-router.put('/:id/approve', async (req, res) => {
+router.put('/:id/approve', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -228,8 +297,19 @@ router.put('/:id/approve', async (req, res) => {
 
     await connection.execute("UPDATE sales_documents SET status = 'approved' WHERE id = ?", [doc.id])
 
+    // Optionally handle immediate payment
+    const { payNow, paymentMethod, paymentChannelId, amount } = req.body || {}
+    if (payNow) {
+      const payAmount = parseFloat(amount) || parseFloat(doc.total_amount)
+      await connection.execute(
+        `UPDATE sales_documents SET paid_amount = ?, payment_status = 'paid', payment_method = ?, payment_channel_id = ?, paid_at = NOW() WHERE id = ?`,
+        [payAmount, paymentMethod || 'cash', paymentChannelId || null, doc.id]
+      )
+    }
+
     // Auto-journal for invoice/receipt
-    if (doc.doc_type === 'invoice' || doc.doc_type === 'receipt') {
+    const approveJournalTypes = ['invoice', 'receipt', 'receipt_tax', 'receipt_abb']
+    if (approveJournalTypes.includes(doc.doc_type)) {
       const journalLines = [
         { accountCode: '1110', debit: parseFloat(doc.total_amount), credit: 0, description: `ลูกหนี้ ${doc.doc_number}` },
         { accountCode: '4100', debit: 0, credit: parseFloat(doc.amount_before_vat), description: `รายได้ ${doc.doc_number}` },
@@ -238,9 +318,13 @@ router.put('/:id/approve', async (req, res) => {
         journalLines.push({ accountCode: '2120', debit: 0, credit: parseFloat(doc.vat_amount), description: `ภาษีขาย ${doc.doc_number}` })
       }
 
+      const docTypeNames = {
+        invoice: 'ใบแจ้งหนี้', receipt_tax: 'ใบเสร็จ/ใบกำกับภาษี',
+        receipt_abb: 'ใบกำกับภาษีอย่างย่อ', receipt: 'ใบเสร็จ',
+      }
       const journalId = await createJournalEntry(connection, {
         companyId, entryDate: doc.doc_date,
-        description: `อนุมัติ${doc.doc_type === 'invoice' ? 'ใบแจ้งหนี้' : 'ใบเสร็จ'} ${doc.doc_number}`,
+        description: `อนุมัติ${docTypeNames[doc.doc_type] || 'เอกสาร'} ${doc.doc_number}`,
         referenceType: 'SALES_DOC', referenceId: doc.id, createdBy: req.user.id,
         lines: journalLines,
       })
@@ -264,7 +348,7 @@ router.put('/:id/approve', async (req, res) => {
 // =============================================
 // PUT /api/sales-doc/:id/pay — บันทึกชำระเงิน
 // =============================================
-router.put('/:id/pay', async (req, res) => {
+router.put('/:id/pay', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -315,7 +399,7 @@ router.put('/:id/pay', async (req, res) => {
 // =============================================
 // PUT /api/sales-doc/:id/void — ยกเลิกเอกสาร
 // =============================================
-router.put('/:id/void', async (req, res) => {
+router.put('/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -344,9 +428,70 @@ router.put('/:id/void', async (req, res) => {
 })
 
 // =============================================
+// DELETE /api/sales-doc/:id — ลบเอกสาร (เฉพาะ draft/voided)
+// =============================================
+router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+
+    const [docs] = await connection.execute(
+      'SELECT * FROM sales_documents WHERE id = ? AND company_id = ?',
+      [req.params.id, companyId]
+    )
+    if (docs.length === 0) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบเอกสาร' })
+    }
+    const doc = docs[0]
+
+    // Only allow deletion of draft or voided documents
+    if (doc.status !== 'draft' && doc.status !== 'voided') {
+      await connection.rollback()
+      return res.status(400).json({
+        message: 'ลบได้เฉพาะเอกสารสถานะ "ร่าง" หรือ "ยกเลิก" เท่านั้น กรุณายกเลิกเอกสารก่อนลบ',
+      })
+    }
+
+    // Check if other documents reference this one (ref_doc_id)
+    const [refs] = await connection.execute(
+      'SELECT id, doc_number FROM sales_documents WHERE ref_doc_id = ? AND company_id = ?',
+      [req.params.id, companyId]
+    )
+    if (refs.length > 0) {
+      await connection.rollback()
+      return res.status(400).json({
+        message: `ไม่สามารถลบได้ เอกสารนี้ถูกอ้างอิงโดย ${refs.map(r => r.doc_number).join(', ')}`,
+      })
+    }
+
+    // Void journal entry if exists (shouldn't for draft, but safety for voided)
+    if (doc.journal_entry_id) {
+      await voidJournalEntry(connection, doc.journal_entry_id)
+    }
+
+    // Delete items (CASCADE should handle, but explicit for safety)
+    await connection.execute('DELETE FROM sales_document_items WHERE document_id = ?', [req.params.id])
+
+    // Delete the document
+    await connection.execute('DELETE FROM sales_documents WHERE id = ? AND company_id = ?', [req.params.id, companyId])
+
+    await connection.commit()
+    res.json({ message: 'ลบเอกสารสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete sales doc error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  } finally {
+    connection.release()
+  }
+})
+
+// =============================================
 // POST /api/sales-doc/:id/convert — แปลง QT→IV หรือ IV→RC
 // =============================================
-router.post('/:id/convert', async (req, res) => {
+router.post('/:id/convert', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   try {
     const companyId = req.user.companyId
     const { targetType } = req.body // 'invoice' or 'receipt'

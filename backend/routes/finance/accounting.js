@@ -2,8 +2,9 @@ const express = require('express')
 const router = express.Router()
 const { pool, executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
+const { writeAuditLog } = require('../../middleware/auditLog')
 
 router.use(auth, companyGuard)
 
@@ -12,15 +13,36 @@ router.use(auth, companyGuard)
 // GET /api/accounting/accounts
 router.get('/accounts', async (req, res) => {
   try {
-    const accounts = await executeQuery(
-      `SELECT a.*, p.name as parent_name, p.account_code as parent_code
-       FROM accounts a
-       LEFT JOIN accounts p ON a.parent_id = p.id
-       WHERE a.company_id = ?
-       ORDER BY a.account_code`,
-      [req.user.companyId]
-    )
-    res.json(accounts)
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        'SELECT COUNT(*) as total FROM accounts WHERE company_id = ?', [req.user.companyId]
+      )
+      const total = countResult.total
+
+      const accounts = await executeQuery(
+        `SELECT a.*, p.name as parent_name, p.account_code as parent_code
+         FROM accounts a
+         LEFT JOIN accounts p ON a.parent_id = p.id
+         WHERE a.company_id = ?
+         ORDER BY a.account_code LIMIT ? OFFSET ?`,
+        [req.user.companyId, limit, offset]
+      )
+      res.json({ data: accounts, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const accounts = await executeQuery(
+        `SELECT a.*, p.name as parent_name, p.account_code as parent_code
+         FROM accounts a
+         LEFT JOIN accounts p ON a.parent_id = p.id
+         WHERE a.company_id = ?
+         ORDER BY a.account_code LIMIT 500`,
+        [req.user.companyId]
+      )
+      res.json(accounts)
+    }
   } catch (error) {
     console.error('Get accounts error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -28,7 +50,7 @@ router.get('/accounts', async (req, res) => {
 })
 
 // POST /api/accounting/accounts
-router.post('/accounts', async (req, res) => {
+router.post('/accounts', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   try {
     const { accountCode, name, accountType, parentId, description } = req.body
     const result = await executeQuery(
@@ -36,6 +58,14 @@ router.post('/accounts', async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?)`,
       [req.user.companyId, accountCode, name, accountType, parentId || null, description || null]
     )
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'CREATE', entityType: 'account', entityId: result.insertId,
+      description: `เพิ่มบัญชี "${accountCode} - ${name}"`,
+      newValues: { accountCode, name, accountType, parentId, description },
+      req,
+    })
+
     res.status(201).json({ message: 'เพิ่มบัญชีสำเร็จ', accountId: result.insertId })
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
@@ -51,42 +81,84 @@ router.post('/accounts', async (req, res) => {
 // GET /api/accounting/expenses
 router.get('/expenses', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { from, to, status, accountId } = req.query
-    let query = `
-      SELECT e.*, a.account_code, a.name as account_name, u.full_name as created_by_name
-      FROM expenses e
-      LEFT JOIN accounts a ON e.account_id = a.id
-      LEFT JOIN users u ON e.created_by = u.id
-      WHERE e.company_id = ?`
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE e.company_id = ?'
+    const baseParams = [req.user.companyId]
 
-    if (from) { query += ' AND e.expense_date >= ?'; params.push(from) }
-    if (to) { query += ' AND e.expense_date <= ?'; params.push(to) }
-    if (status) { query += ' AND e.status = ?'; params.push(status) }
-    if (accountId) { query += ' AND e.account_id = ?'; params.push(accountId) }
+    if (from) { whereClause += ' AND e.expense_date >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND e.expense_date <= ?'; baseParams.push(to) }
+    if (status) { whereClause += ' AND e.status = ?'; baseParams.push(status) }
+    if (accountId) { whereClause += ' AND e.account_id = ?'; baseParams.push(accountId) }
 
-    query += ' ORDER BY e.expense_date DESC, e.id DESC LIMIT 200'
-    const expenses = await executeQuery(query, params)
-
-    // Fetch items for all expenses
-    if (expenses.length > 0) {
-      const expenseIds = expenses.map(e => e.id)
-      const items = await executeQuery(
-        `SELECT ei.*, a.account_code, a.name as account_name
-         FROM expense_items ei
-         JOIN accounts a ON ei.account_id = a.id
-         WHERE ei.expense_id IN (${expenseIds.map(() => '?').join(',')})`,
-        expenseIds
+    let expenses
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM expenses e ${whereClause}`, baseParams
       )
-      const itemsByExpense = {}
-      items.forEach(item => {
-        if (!itemsByExpense[item.expense_id]) itemsByExpense[item.expense_id] = []
-        itemsByExpense[item.expense_id].push(item)
-      })
-      expenses.forEach(e => { e.items = itemsByExpense[e.id] || [] })
-    }
+      const total = countResult.total
 
-    res.json(expenses)
+      expenses = await executeQuery(
+        `SELECT e.*, a.account_code, a.name as account_name, u.full_name as created_by_name
+         FROM expenses e
+         LEFT JOIN accounts a ON e.account_id = a.id
+         LEFT JOIN users u ON e.created_by = u.id
+         ${whereClause} ORDER BY e.expense_date DESC, e.id DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+
+      // Fetch items for all expenses
+      if (expenses.length > 0) {
+        const expenseIds = expenses.map(e => e.id)
+        const items = await executeQuery(
+          `SELECT ei.*, a.account_code, a.name as account_name
+           FROM expense_items ei
+           JOIN accounts a ON ei.account_id = a.id
+           WHERE ei.expense_id IN (${expenseIds.map(() => '?').join(',')})`,
+          expenseIds
+        )
+        const itemsByExpense = {}
+        items.forEach(item => {
+          if (!itemsByExpense[item.expense_id]) itemsByExpense[item.expense_id] = []
+          itemsByExpense[item.expense_id].push(item)
+        })
+        expenses.forEach(e => { e.items = itemsByExpense[e.id] || [] })
+      }
+
+      res.json({ data: expenses, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      expenses = await executeQuery(
+        `SELECT e.*, a.account_code, a.name as account_name, u.full_name as created_by_name
+         FROM expenses e
+         LEFT JOIN accounts a ON e.account_id = a.id
+         LEFT JOIN users u ON e.created_by = u.id
+         ${whereClause} ORDER BY e.expense_date DESC, e.id DESC LIMIT 500`,
+        baseParams
+      )
+
+      // Fetch items for all expenses
+      if (expenses.length > 0) {
+        const expenseIds = expenses.map(e => e.id)
+        const items = await executeQuery(
+          `SELECT ei.*, a.account_code, a.name as account_name
+           FROM expense_items ei
+           JOIN accounts a ON ei.account_id = a.id
+           WHERE ei.expense_id IN (${expenseIds.map(() => '?').join(',')})`,
+          expenseIds
+        )
+        const itemsByExpense = {}
+        items.forEach(item => {
+          if (!itemsByExpense[item.expense_id]) itemsByExpense[item.expense_id] = []
+          itemsByExpense[item.expense_id].push(item)
+        })
+        expenses.forEach(e => { e.items = itemsByExpense[e.id] || [] })
+      }
+
+      res.json(expenses)
+    }
   } catch (error) {
     console.error('Get expenses error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -94,7 +166,7 @@ router.get('/expenses', async (req, res) => {
 })
 
 // POST /api/accounting/expenses — supports multi-line items
-router.post('/expenses', async (req, res) => {
+router.post('/expenses', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -102,7 +174,7 @@ router.post('/expenses', async (req, res) => {
     const {
       vendorName, taxId, contactId, expenseDate, dueDate, paymentMethod, paymentChannelId, paymentStatus,
       referenceNumber, taxInvoiceNumber, taxInvoiceDate, taxPeriod,
-      note, status: docStatus, items
+      note, status: docStatus, items, adjustments
     } = req.body
 
     if (!items || items.length === 0) {
@@ -145,6 +217,13 @@ router.post('/expenses', async (req, res) => {
 
     const expenseNumber = await generateDocNumber('EXP', companyId, 'expenses', 'expense_number')
 
+    // Process adjustments (always credit-side)
+    let adjTotal = 0
+    const validAdjustments = (adjustments || []).filter(a => a.accountId && parseFloat(a.amount) > 0)
+    validAdjustments.forEach(a => {
+      adjTotal += parseFloat(a.amount) || 0
+    })
+
     let journalEntryId = null
 
     // Create journal entry only for approved expenses
@@ -166,8 +245,19 @@ router.post('/expenses', async (req, res) => {
         )
       }
 
-      // Credit: Cash/Bank (account 1100)
-      const netPayment = totalAmount + totalVat - totalWht
+      // Adjustment journal lines (always credit)
+      for (const adj of validAdjustments) {
+        const adjAmt = parseFloat(adj.amount) || 0
+        await connection.execute(
+          `INSERT INTO journal_lines (journal_entry_id, account_id, debit_amount, credit_amount, description)
+           VALUES (?, ?, 0, ?, ?)`,
+          [journalEntryId, adj.accountId, adjAmt,
+            adj.description || 'ปรับปรุงรายการ']
+        )
+      }
+
+      // Credit: Cash/Bank (account 1100) — adjusted for adjustment items
+      const netPayment = totalAmount + totalVat - totalWht - adjTotal
       const [cashAccounts] = await connection.execute(
         "SELECT id FROM accounts WHERE company_id = ? AND account_code = '1100'",
         [companyId]
@@ -235,6 +325,14 @@ router.post('/expenses', async (req, res) => {
       )
     }
 
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'CREATE', entityType: 'expense', entityId: expenseId,
+      description: `สร้างค่าใช้จ่าย ${expenseNumber} (${finalStatus})`,
+      newValues: { expenseNumber, amount: totalAmount + totalVat, vendorName, status: finalStatus, itemCount: items.length },
+      req,
+    })
+
     await connection.commit()
     res.status(201).json({
       message: finalStatus === 'draft' ? 'บันทึกร่างสำเร็จ' : 'บันทึกค่าใช้จ่ายสำเร็จ',
@@ -250,7 +348,7 @@ router.post('/expenses', async (req, res) => {
 })
 
 // PATCH /api/accounting/expenses/:id/approve
-router.patch('/expenses/:id/approve', async (req, res) => {
+router.patch('/expenses/:id/approve', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -326,6 +424,15 @@ router.patch('/expenses/:id/approve', async (req, res) => {
       ['approved', journalEntryId, expenseId]
     )
 
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'UPDATE', entityType: 'expense', entityId: expenseId,
+      description: `อนุมัติค่าใช้จ่าย ${expense.expense_number}`,
+      oldValues: { status: 'draft' },
+      newValues: { status: 'approved', journalEntryId },
+      req,
+    })
+
     await connection.commit()
     res.json({ message: 'อนุมัติค่าใช้จ่ายสำเร็จ' })
   } catch (error) {
@@ -338,7 +445,7 @@ router.patch('/expenses/:id/approve', async (req, res) => {
 })
 
 // PATCH /api/accounting/expenses/:id/void
-router.patch('/expenses/:id/void', async (req, res) => {
+router.patch('/expenses/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
@@ -370,6 +477,15 @@ router.patch('/expenses/:id/void', async (req, res) => {
       ['voided', expenseId]
     )
 
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'VOID', entityType: 'expense', entityId: expenseId,
+      description: `ยกเลิกค่าใช้จ่าย ${expense.expense_number}`,
+      oldValues: { status: expense.status, amount: expense.amount },
+      newValues: { status: 'voided' },
+      req,
+    })
+
     await connection.commit()
     res.json({ message: 'ยกเลิกค่าใช้จ่ายสำเร็จ' })
   } catch (error) {
@@ -386,21 +502,42 @@ router.patch('/expenses/:id/void', async (req, res) => {
 // GET /api/accounting/journals
 router.get('/journals', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { from, to, status } = req.query
-    let query = `
-      SELECT je.*, u.full_name as created_by_name
-      FROM journal_entries je
-      LEFT JOIN users u ON je.created_by = u.id
-      WHERE je.company_id = ?`
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE je.company_id = ?'
+    const baseParams = [req.user.companyId]
 
-    if (from) { query += ' AND je.entry_date >= ?'; params.push(from) }
-    if (to) { query += ' AND je.entry_date <= ?'; params.push(to) }
-    if (status) { query += ' AND je.status = ?'; params.push(status) }
+    if (from) { whereClause += ' AND je.entry_date >= ?'; baseParams.push(from) }
+    if (to) { whereClause += ' AND je.entry_date <= ?'; baseParams.push(to) }
+    if (status) { whereClause += ' AND je.status = ?'; baseParams.push(status) }
 
-    query += ' ORDER BY je.entry_date DESC, je.id DESC LIMIT 200'
-    const entries = await executeQuery(query, params)
-    res.json(entries)
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM journal_entries je ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const entries = await executeQuery(
+        `SELECT je.*, u.full_name as created_by_name
+         FROM journal_entries je
+         LEFT JOIN users u ON je.created_by = u.id
+         ${whereClause} ORDER BY je.entry_date DESC, je.id DESC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: entries, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const entries = await executeQuery(
+        `SELECT je.*, u.full_name as created_by_name
+         FROM journal_entries je
+         LEFT JOIN users u ON je.created_by = u.id
+         ${whereClause} ORDER BY je.entry_date DESC, je.id DESC LIMIT 500`,
+        baseParams
+      )
+      res.json(entries)
+    }
   } catch (error) {
     console.error('Get journals error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -427,6 +564,96 @@ router.get('/journals/:id', async (req, res) => {
   } catch (error) {
     console.error('Get journal detail error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// DELETE /api/accounting/expenses/:id
+router.delete('/expenses/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+
+    const [expenses] = await connection.execute(
+      'SELECT * FROM expenses WHERE id = ? AND company_id = ?',
+      [req.params.id, companyId]
+    )
+    if (expenses.length === 0) {
+      return res.status(404).json({ message: 'ไม่พบรายการ' })
+    }
+    const expense = expenses[0]
+
+    const journalId = expense.journal_entry_id
+
+    // Remove expense first (FK: expense_items → expenses, expenses → journal_entries)
+    await connection.execute('DELETE FROM expense_items WHERE expense_id = ?', [req.params.id])
+    await connection.execute('DELETE FROM expenses WHERE id = ?', [req.params.id])
+
+    // Then delete linked journal entry (now safe — no FK references remain)
+    if (journalId) {
+      await connection.execute('DELETE FROM journal_lines WHERE journal_entry_id = ?', [journalId])
+      await connection.execute('DELETE FROM journal_entries WHERE id = ?', [journalId])
+    }
+
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'DELETE', entityType: 'expense', entityId: req.params.id,
+      description: `ลบค่าใช้จ่าย ${expense.expense_number}`,
+      oldValues: { expenseNumber: expense.expense_number, amount: expense.amount, status: expense.status },
+      req,
+    })
+
+    await connection.commit()
+    res.json({ message: 'ลบค่าใช้จ่ายสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete expense error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  } finally {
+    connection.release()
+  }
+})
+
+// DELETE /api/accounting/journals/:id
+router.delete('/journals/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+
+    const [entries] = await connection.execute(
+      'SELECT * FROM journal_entries WHERE id = ? AND company_id = ?',
+      [req.params.id, companyId]
+    )
+    if (entries.length === 0) {
+      return res.status(404).json({ message: 'ไม่พบรายการ' })
+    }
+    const entry = entries[0]
+
+    // Nullify FK references from other tables before deleting
+    await connection.execute('UPDATE expenses SET journal_entry_id = NULL WHERE journal_entry_id = ? AND company_id = ?', [req.params.id, companyId])
+    await connection.execute('UPDATE sales_documents SET journal_entry_id = NULL WHERE journal_entry_id = ? AND company_id = ?', [req.params.id, companyId])
+    await connection.execute('UPDATE sale_returns SET journal_entry_id = NULL WHERE journal_entry_id = ? AND company_id = ?', [req.params.id, companyId]).catch(() => {})
+
+    await connection.execute('DELETE FROM journal_lines WHERE journal_entry_id = ?', [req.params.id])
+    await connection.execute('DELETE FROM journal_entries WHERE id = ?', [req.params.id])
+
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'DELETE', entityType: 'journal_entry', entityId: req.params.id,
+      description: `ลบรายการบัญชี ${entry.entry_number || `JE-${entry.id}`}`,
+      oldValues: { entryNumber: entry.entry_number, status: entry.status, description: entry.description },
+      req,
+    })
+
+    await connection.commit()
+    res.json({ message: 'ลบรายการบัญชีสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete journal error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  } finally {
+    connection.release()
   }
 })
 

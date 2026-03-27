@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for file:*)",
+      "Bash(do echo:*)",
+      "Read(//c/Users/USER/Desktop/github/-POS_Stock_shop/**)",
+      "Bash(done)",
+      "Bash(while read:*)"
+    ]
+  }
+}

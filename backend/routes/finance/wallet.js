@@ -2,8 +2,9 @@ const express = require('express')
 const router = express.Router()
 const { executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
-const { companyGuard } = require('../../middleware/companyGuard')
+const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
+const { writeAuditLog } = require('../../middleware/auditLog')
 
 router.use(auth, companyGuard)
 
@@ -21,16 +22,36 @@ router.get('/next-code', async (req, res) => {
 // GET /api/wallet — list all payment channels
 router.get('/', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 0
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+    const offset = page > 0 ? (page - 1) * limit : 0
+
     const { active } = req.query
-    let query = 'SELECT * FROM payment_channels WHERE company_id = ?'
-    const params = [req.user.companyId]
+    let whereClause = 'WHERE company_id = ?'
+    const baseParams = [req.user.companyId]
     if (active !== undefined) {
-      query += ' AND is_active = ?'
-      params.push(active === 'true' ? 1 : 0)
+      whereClause += ' AND is_active = ?'
+      baseParams.push(active === 'true' ? 1 : 0)
     }
-    query += ' ORDER BY is_default DESC, name ASC'
-    const channels = await executeQuery(query, params)
-    res.json(channels)
+
+    if (page > 0) {
+      const [countResult] = await executeQuery(
+        `SELECT COUNT(*) as total FROM payment_channels ${whereClause}`, baseParams
+      )
+      const total = countResult.total
+
+      const channels = await executeQuery(
+        `SELECT * FROM payment_channels ${whereClause} ORDER BY is_default DESC, name ASC LIMIT ? OFFSET ?`,
+        [...baseParams, limit, offset]
+      )
+      res.json({ data: channels, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    } else {
+      const channels = await executeQuery(
+        `SELECT * FROM payment_channels ${whereClause} ORDER BY is_default DESC, name ASC LIMIT 500`,
+        baseParams
+      )
+      res.json(channels)
+    }
   } catch (error) {
     console.error('Get payment channels error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -38,7 +59,7 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/wallet — create
-router.post('/', async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   try {
     const { name, type, accountName, accountNumber, bankName, qrCodeUrl, icon, isDefault, note } = req.body
     if (!name || !type) return res.status(400).json({ message: 'กรุณาระบุชื่อและประเภทช่องทาง' })
@@ -66,7 +87,7 @@ router.post('/', async (req, res) => {
 })
 
 // PUT /api/wallet/:id — update
-router.put('/:id', async (req, res) => {
+router.put('/:id', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
   try {
     const { name, type, accountName, accountNumber, bankName, qrCodeUrl, icon, isDefault, isActive, note } = req.body
     const companyId = req.user.companyId
@@ -93,7 +114,7 @@ router.put('/:id', async (req, res) => {
 })
 
 // DELETE /api/wallet/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', roleCheck('owner', 'admin'), async (req, res) => {
   try {
     const companyId = req.user.companyId
     const [existing] = await executeQuery('SELECT id FROM payment_channels WHERE id = ? AND company_id = ?', [req.params.id, companyId])
