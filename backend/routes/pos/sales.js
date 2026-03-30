@@ -718,7 +718,21 @@ router.delete('/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) =
       }
     }
 
-    // Delete payments, sale_items (CASCADE), then sale
+    // Delete all child records that reference this sale, then delete the sale
+    await connection.execute('DELETE FROM consignment_transactions WHERE sale_id = ?', [saleId])
+    await connection.execute('DELETE FROM loyalty_transactions WHERE sale_id = ?', [saleId])
+    await connection.execute('DELETE FROM stock_transactions WHERE reference_type IN (\'SALE\', \'VOID_SALE\') AND reference_id = ?', [saleId])
+
+    // Delete journal entries & lines for this sale
+    const [journalEntries] = await connection.execute(
+      "SELECT id FROM journal_entries WHERE company_id = ? AND reference_type IN ('SALE', 'VOID_SALE') AND reference_id = ?",
+      [companyId, saleId]
+    )
+    for (const je of journalEntries) {
+      await connection.execute('DELETE FROM journal_lines WHERE journal_entry_id = ?', [je.id])
+      await connection.execute('DELETE FROM journal_entries WHERE id = ?', [je.id])
+    }
+
     await connection.execute('DELETE FROM payments WHERE sale_id = ?', [saleId])
     await connection.execute('DELETE FROM sale_items WHERE sale_id = ?', [saleId])
     await connection.execute('DELETE FROM sales WHERE id = ? AND company_id = ?', [saleId, companyId])

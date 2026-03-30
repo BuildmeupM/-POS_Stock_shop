@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -13,6 +13,7 @@ import {
   IconCalendar, IconFileInvoice, IconTrendingUp, IconAlertTriangle,
   IconUser, IconClock, IconHash, IconShoppingCart,
   IconExternalLink, IconFilePlus, IconTrash, IconFileSpreadsheet,
+  IconPrinter,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { fmt, fmtDateTime as fmtDate } from '../../utils/formatters'
@@ -53,6 +54,8 @@ export default function SalesPage() {
   const [deleteDocConfirmId, setDeleteDocConfirmId] = useState<number | null>(null)
   const [deleteSaleConfirmId, setDeleteSaleConfirmId] = useState<number | null>(null)
   const [exportLoading, setExportLoading] = useState(false)
+  const [showReceipt, setShowReceipt] = useState(false)
+  const thermalRef = useRef<HTMLDivElement>(null)
 
   // === Data Queries ===
   const { data: sales = [], isLoading } = useQuery({
@@ -699,25 +702,135 @@ export default function SalesPage() {
                     onClick={() => { setShowDetail(false); setSelectedSaleId(null) }}>
                     ปิด
                   </Button>
-                  {!isVoided ? (
-                    <Button variant="light" color="red" size="sm" radius="md"
-                      leftSection={<IconX size={15} />}
-                      onClick={() => openVoid(saleDetail.id)}>
-                      ยกเลิกบิลนี้
+                  <Group gap="sm">
+                    <Button variant="light" color="indigo" size="sm" radius="md"
+                      leftSection={<IconPrinter size={15} />}
+                      onClick={() => setShowReceipt(true)}>
+                      ใบเสร็จย่อ
                     </Button>
-                  ) : (
-                    <Button variant="filled" color="red" size="sm" radius="md"
-                      leftSection={<IconTrash size={15} />}
-                      onClick={() => setDeleteSaleConfirmId(saleDetail.id)}>
-                      ลบบิลนี้
-                    </Button>
-                  )}
+                    {!isVoided ? (
+                      <Button variant="light" color="red" size="sm" radius="md"
+                        leftSection={<IconX size={15} />}
+                        onClick={() => openVoid(saleDetail.id)}>
+                        ยกเลิกบิลนี้
+                      </Button>
+                    ) : (
+                      <Button variant="filled" color="red" size="sm" radius="md"
+                        leftSection={<IconTrash size={15} />}
+                        onClick={() => setDeleteSaleConfirmId(saleDetail.id)}>
+                        ลบบิลนี้
+                      </Button>
+                    )}
+                  </Group>
                 </Group>
               </Stack>
             </div>
           )
         })()}
       </Modal>
+
+      {/* === Thermal Receipt Modal === */}
+      <Modal opened={showReceipt} onClose={() => setShowReceipt(false)} title={null}
+        size="sm" centered withCloseButton={false} radius="lg"
+        overlayProps={{ backgroundOpacity: 0.45, blur: 4 }} zIndex={250}>
+        {saleDetail && (
+          <div style={{ padding: 4 }}>
+            <div style={{ background: '#fff', border: '1px dashed #ccc', borderRadius: 8, padding: '16px 14px', fontFamily: "'Sarabun', sans-serif", color: '#222', fontSize: 13 }}>
+              {/* Header */}
+              <div style={{ textAlign: 'center', borderBottom: '2px dashed #999', paddingBottom: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>{companySettings?.name || 'POS Bookdee'}</div>
+                <div style={{ fontSize: 11, color: '#888' }}>ใบเสร็จอย่างย่อ / Simplified Receipt</div>
+              </div>
+              {/* Info */}
+              <div style={{ fontSize: 12, marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed #ccc' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>เลขที่:</span><span style={{ fontWeight: 600 }}>{saleDetail.invoice_number}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>วันที่:</span><span>{new Date(saleDetail.sold_at).toLocaleDateString('th-TH',{year:'numeric',month:'short',day:'numeric'})} {new Date(saleDetail.sold_at).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'})}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>แคชเชียร์:</span><span>{saleDetail.cashier_name || '-'}</span></div>
+                {saleDetail.customer_name && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>ลูกค้า:</span><span>{saleDetail.customer_name}</span></div>}
+              </div>
+              {/* Items */}
+              <div style={{ marginBottom: 8 }}>
+                {saleDetail.items?.map((item: SaleItem, i: number) => {
+                  const lineTotal = parseFloat(item.subtotal)
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', fontSize: 12, borderBottom: '1px dotted #e5e5e5' }}>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.product_name} ×{item.quantity}</span>
+                      <span style={{ fontWeight: 600, marginLeft: 8, flexShrink: 0 }}>฿{fmt(lineTotal)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Totals */}
+              <div style={{ borderTop: '2px dashed #999', paddingTop: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>ยอดรวม</span><span>฿{fmt(parseFloat(saleDetail.total_amount))}</span></div>
+                {parseFloat(saleDetail.discount_amount) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#dc2626' }}><span>ส่วนลด</span><span>-฿{fmt(parseFloat(saleDetail.discount_amount))}</span></div>}
+                {parseFloat(saleDetail.vat_amount) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>VAT</span><span>฿{fmt(parseFloat(saleDetail.vat_amount))}</span></div>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, borderTop: '1px solid #333', marginTop: 4, paddingTop: 4 }}><span>ยอดสุทธิ</span><span>฿{fmt(parseFloat(saleDetail.net_amount))}</span></div>
+              </div>
+              {/* Payment */}
+              <div style={{ borderTop: '1px dashed #ccc', paddingTop: 6, marginTop: 6, fontSize: 12 }}>
+                {saleDetail.payments?.map((p: SalePayment, i: number) => {
+                  const pm = paymentIcons[p.method] || paymentIcons.cash
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>{pm.label}</span><span>฿{fmt(parseFloat(p.amount))}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Footer */}
+              <div style={{ textAlign: 'center', borderTop: '2px dashed #999', paddingTop: 8, marginTop: 8, fontSize: 11, color: '#888' }}>
+                <div style={{ fontWeight: 700, color: '#333' }}>{companySettings?.settings?.receipt_footer_text || 'ขอบคุณที่ใช้บริการ'}</div>
+                <div>Thank you & See you again!</div>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <Group grow mt="md" gap="sm">
+              <Button variant="light" size="md" onClick={() => setShowReceipt(false)}>ปิด</Button>
+              <Button leftSection={<IconPrinter size={16} />} color="indigo" size="md"
+                onClick={() => {
+                  const pc = thermalRef.current; if (!pc) return
+                  const pw = window.open('', '_blank', 'width=320,height=600'); if (!pw) return
+                  pw.document.write(`<!DOCTYPE html><html><head><title>ใบเสร็จย่อ ${saleDetail.invoice_number}</title><style>@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Sarabun',sans-serif;width:80mm;margin:0 auto;padding:4mm;color:#222;font-size:13px}.receipt-header{text-align:center;margin-bottom:8px;padding-bottom:8px;border-bottom:2px dashed #888}.receipt-header h1{font-size:16px;font-weight:700;margin-bottom:2px}.receipt-header p{font-size:10px;color:#555}.receipt-info{font-size:11px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px dashed #aaa}.receipt-info div{display:flex;justify-content:space-between;padding:1px 0}.receipt-item{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;border-bottom:1px dotted #ddd}.receipt-item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.receipt-item .amt{font-weight:600;margin-left:8px;flex-shrink:0}.receipt-totals{border-top:2px dashed #888;padding-top:6px;margin-bottom:8px;font-size:12px}.receipt-totals div{display:flex;justify-content:space-between;padding:2px 0}.receipt-totals .grand-total{font-size:16px;font-weight:700;padding:4px 0;border-top:1px solid #333;margin-top:4px}.receipt-payment{border-top:1px dashed #aaa;padding-top:6px;margin-bottom:10px;font-size:11px}.receipt-payment div{display:flex;justify-content:space-between;padding:1px 0}.receipt-footer{text-align:center;font-size:10px;color:#555;padding-top:8px;border-top:2px dashed #888}.receipt-footer p{margin:2px 0}@media print{@page{size:80mm auto;margin:0}body{width:80mm}}</style></head><body>${pc.innerHTML}</body></html>`)
+                  pw.document.close(); pw.focus()
+                  setTimeout(() => { pw.print(); pw.close() }, 400)
+                }}>พิมพ์ใบเสร็จย่อ</Button>
+            </Group>
+          </div>
+        )}
+      </Modal>
+
+      {/* Hidden Thermal Receipt Print Template */}
+      {saleDetail && showReceipt && (
+        <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+          <div ref={thermalRef}>
+            <div className="receipt-header"><h1>{companySettings?.name || 'POS Bookdee'}</h1><p>ใบเสร็จอย่างย่อ / Simplified Receipt</p></div>
+            <div className="receipt-info">
+              <div><span>เลขที่:</span><span>{saleDetail.invoice_number}</span></div>
+              <div><span>วันที่:</span><span>{new Date(saleDetail.sold_at).toLocaleDateString('th-TH',{year:'numeric',month:'short',day:'numeric'})} {new Date(saleDetail.sold_at).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'})}</span></div>
+              <div><span>แคชเชียร์:</span><span>{saleDetail.cashier_name || '-'}</span></div>
+              {saleDetail.customer_name && <div><span>ลูกค้า:</span><span>{saleDetail.customer_name}</span></div>}
+            </div>
+            {saleDetail.items?.map((item: SaleItem, i: number) => (
+              <div key={i} className="receipt-item"><span className="name">{item.product_name} ×{item.quantity}</span><span className="amt">฿{fmt(parseFloat(item.subtotal))}</span></div>
+            ))}
+            <div className="receipt-totals">
+              <div><span>ยอดรวม</span><span>฿{fmt(parseFloat(saleDetail.total_amount))}</span></div>
+              {parseFloat(saleDetail.discount_amount) > 0 && <div><span>ส่วนลด</span><span>-฿{fmt(parseFloat(saleDetail.discount_amount))}</span></div>}
+              {parseFloat(saleDetail.vat_amount) > 0 && <div><span>VAT</span><span>฿{fmt(parseFloat(saleDetail.vat_amount))}</span></div>}
+              <div className="grand-total"><span>ยอดสุทธิ</span><span>฿{fmt(parseFloat(saleDetail.net_amount))}</span></div>
+            </div>
+            <div className="receipt-payment">
+              {saleDetail.payments?.map((p: SalePayment, i: number) => {
+                const pm = paymentIcons[p.method] || paymentIcons.cash
+                return <div key={i}><span>{pm.label}</span><span>฿{fmt(parseFloat(p.amount))}</span></div>
+              })}
+            </div>
+            <div className="receipt-footer"><p style={{fontWeight:700}}>{companySettings?.settings?.receipt_footer_text || 'ขอบคุณที่ใช้บริการ'}</p><p>Thank you & See you again!</p></div>
+          </div>
+        </div>
+      )}
 
       {/* === Void Confirm Modal === */}
       <Modal opened={showVoidConfirm} onClose={() => setShowVoidConfirm(false)}
