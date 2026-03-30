@@ -10,6 +10,7 @@ import {
   IconArrowLeft, IconPrinter, IconCheck, IconX, IconCash,
   IconFileInvoice, IconFileText, IconReceipt, IconTruck,
   IconCalendar, IconUser, IconBuilding, IconHash, IconTrash,
+  IconLink, IconChevronRight, IconPlus, IconArrowRight,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { fmt } from '../../utils/formatters'
@@ -146,6 +147,19 @@ export default function SalesDocDetailPage() {
   const companyAddress = company?.address || ''
   const companyTaxId = company?.tax_id || ''
   const companyBranch = company?.branch || 'สำนักงานใหญ่'
+
+  // Document flow: determine what next doc types can be created
+  const NEXT_DOC_MAP: Record<string, { type: string; label: string; color: string; icon: any }[]> = {
+    quotation: [{ type: 'invoice', label: 'สร้างใบแจ้งหนี้', color: 'indigo', icon: IconFileInvoice }],
+    invoice: [
+      { type: 'delivery', label: 'สร้างใบส่งของ', color: 'cyan', icon: IconTruck },
+      { type: 'receipt', label: 'สร้างใบเสร็จรับเงิน', color: 'green', icon: IconReceipt },
+    ],
+  }
+  const nextDocOptions = (doc.status === 'approved' || doc.status === 'accepted') ? (NEXT_DOC_MAP[doc.doc_type] || []) : []
+  const sourceDoc = doc.sourceDoc || null
+  const childDocs = doc.childDocs || []
+  const hasLinkedDocs = sourceDoc || childDocs.length > 0
 
   // ─── Print Function ───
   const handlePrint = () => {
@@ -317,6 +331,143 @@ export default function SalesDocDetailPage() {
         </Group>
       </Card>
 
+      {/* ═══ Document Flow / Linked Documents ═══ */}
+      {(hasLinkedDocs || nextDocOptions.length > 0) && (
+        <Card shadow="xs" padding={0} radius="md" withBorder style={{ overflow: 'hidden' }}>
+          <div style={{
+            padding: '12px 20px',
+            background: 'linear-gradient(135deg, rgba(59,130,246,0.06), rgba(139,92,246,0.04))',
+            borderBottom: '1px solid var(--app-border)',
+          }}>
+            <Group justify="space-between">
+              <Group gap={10}>
+                <ThemeIcon size={28} variant="gradient" gradient={{ from: 'blue', to: 'violet' }} radius="md">
+                  <IconLink size={15} />
+                </ThemeIcon>
+                <div>
+                  <Text fw={700} size="sm">เอกสารที่เชื่อมกัน</Text>
+                  <Text size="xs" c="dimmed">ดูเอกสารต้นทางและเอกสารที่สร้างต่อจากเอกสารนี้</Text>
+                </div>
+              </Group>
+              {nextDocOptions.length > 0 && (
+                <Group gap="xs">
+                  {nextDocOptions.map(opt => (
+                    <Button key={opt.type} size="xs" variant="light" color={opt.color}
+                      leftSection={<IconPlus size={14} />}
+                      onClick={() => navigate(`/sales-doc/create?type=${opt.type}&refDocId=${id}`)}>
+                      {opt.label}
+                    </Button>
+                  ))}
+                </Group>
+              )}
+            </Group>
+          </div>
+
+          <div style={{ padding: '16px 20px' }}>
+            {/* Document Flow Visualization */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {/* Source document */}
+              {sourceDoc && (
+                <>
+                  <div
+                    onClick={() => navigate(`/sales-doc/${sourceDoc.id}`)}
+                    style={{
+                      padding: '10px 16px', borderRadius: 10, cursor: 'pointer',
+                      background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)',
+                      transition: 'all 0.2s',
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(59,130,246,0.12)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(59,130,246,0.4)' }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(59,130,246,0.06)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(59,130,246,0.2)' }}
+                  >
+                    <Text size="xs" c="dimmed" fw={600}>
+                      {DOC_CONFIG[sourceDoc.doc_type]?.label || sourceDoc.doc_type}
+                    </Text>
+                    <Text size="sm" fw={700} c="blue" style={{ cursor: 'pointer' }}>
+                      {sourceDoc.doc_number}
+                    </Text>
+                    <Group gap={6} mt={2}>
+                      <Badge size="xs" variant="light" color={STATUS_MAP[sourceDoc.status]?.color || 'gray'}>
+                        {STATUS_MAP[sourceDoc.status]?.label || sourceDoc.status}
+                      </Badge>
+                      <Text size="xs" c="dimmed">฿{fmt(parseFloat(sourceDoc.total_amount) || 0)}</Text>
+                    </Group>
+                  </div>
+                  <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
+                </>
+              )}
+
+              {/* Current document */}
+              <div style={{
+                padding: '10px 16px', borderRadius: 10,
+                background: config.gradient,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              }}>
+                <Text size="xs" c="rgba(255,255,255,0.7)" fw={600}>{config.label}</Text>
+                <Text size="sm" fw={700} c="white">{doc.doc_number}</Text>
+                <Group gap={6} mt={2}>
+                  <Badge size="xs" variant="white" color="dark">{status.label}</Badge>
+                  <Text size="xs" c="rgba(255,255,255,0.8)">฿{fmt(totalAmount)}</Text>
+                </Group>
+              </div>
+
+              {/* Child documents */}
+              {childDocs.length > 0 && (
+                <>
+                  <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
+                  {childDocs.map((child: any, ci: number) => (
+                    <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div
+                        onClick={() => navigate(`/sales-doc/${child.id}`)}
+                        style={{
+                          padding: '10px 16px', borderRadius: 10, cursor: 'pointer',
+                          background: `${DOC_CONFIG[child.doc_type]?.color ? `var(--mantine-color-${DOC_CONFIG[child.doc_type].color}-light)` : 'rgba(34,197,94,0.06)'}`,
+                          border: `1px solid ${DOC_CONFIG[child.doc_type]?.color ? `var(--mantine-color-${DOC_CONFIG[child.doc_type].color}-light-hover)` : 'rgba(34,197,94,0.2)'}`,
+                          transition: 'all 0.2s',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-1px)'; (e.currentTarget as HTMLDivElement).style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)' }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = 'none'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'none' }}
+                      >
+                        <Text size="xs" c="dimmed" fw={600}>
+                          {DOC_CONFIG[child.doc_type]?.label || child.doc_type}
+                        </Text>
+                        <Text size="sm" fw={700} c={DOC_CONFIG[child.doc_type]?.color || 'green'} style={{ cursor: 'pointer' }}>
+                          {child.doc_number}
+                        </Text>
+                        <Group gap={6} mt={2}>
+                          <Badge size="xs" variant="light" color={STATUS_MAP[child.status]?.color || 'gray'}>
+                            {STATUS_MAP[child.status]?.label || child.status}
+                          </Badge>
+                          <Text size="xs" c="dimmed">฿{fmt(parseFloat(child.total_amount) || 0)}</Text>
+                        </Group>
+                      </div>
+                      {ci < childDocs.length - 1 && (
+                        <IconArrowRight size={14} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Placeholder for next doc */}
+              {childDocs.length === 0 && nextDocOptions.length > 0 && (
+                <>
+                  <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0, opacity: 0.4 }} />
+                  <div style={{
+                    padding: '10px 16px', borderRadius: 10,
+                    border: '2px dashed var(--app-border)',
+                    background: 'rgba(0,0,0,0.01)',
+                    opacity: 0.6,
+                  }}>
+                    <Text size="xs" c="dimmed" fw={600}>ยังไม่มีเอกสาร</Text>
+                    <Text size="sm" c="dimmed" fw={500}>กดปุ่มด้านบนเพื่อสร้าง</Text>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Document Info */}
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
         <Card shadow="xs" padding="lg" radius="md" withBorder>
@@ -329,6 +480,15 @@ export default function SalesDocDetailPage() {
             <Group justify="space-between"><Text size="sm" c="dimmed">วันที่</Text><Text size="sm">{fmtDate(doc.doc_date)}</Text></Group>
             {doc.due_date && <Group justify="space-between"><Text size="sm" c="dimmed">ครบกำหนด</Text><Text size="sm">{fmtDate(doc.due_date)}</Text></Group>}
             {doc.reference && <Group justify="space-between"><Text size="sm" c="dimmed">อ้างอิง</Text><Text size="sm">{doc.reference}</Text></Group>}
+            {sourceDoc && (
+              <Group justify="space-between">
+                <Text size="sm" c="dimmed">เอกสารต้นทาง</Text>
+                <Text size="sm" fw={600} c="blue" style={{ cursor: 'pointer' }}
+                  onClick={() => navigate(`/sales-doc/${sourceDoc.id}`)}>
+                  {sourceDoc.doc_number}
+                </Text>
+              </Group>
+            )}
             {doc.price_type && (
               <Group justify="space-between"><Text size="sm" c="dimmed">ประเภทราคา</Text>
                 <Badge variant="light" size="sm" color="gray">
