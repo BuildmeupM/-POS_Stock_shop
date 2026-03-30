@@ -112,8 +112,15 @@ export default function Layout() {
   const navigate = useNavigate()
   const { colorScheme, setColorScheme } = useMantineColorScheme()
 
-  /* ── Collapsible groups ── */
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  /* ── Collapsible groups — default: all collapsed EXCEPT overview, pos, sales ── */
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    const defaults: Record<string, boolean> = {}
+    const openByDefault = ['overview', 'pos', 'sales']
+    navGroups.forEach(g => {
+      defaults[g.key] = !openByDefault.includes(g.key)
+    })
+    return defaults
+  })
   const toggleGroup = (key: string) => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
 
   /* ── Create Company ── */
@@ -224,7 +231,7 @@ export default function Layout() {
             const isCollapsed = collapsed[group.key] ?? false
 
             return (
-              <div key={group.key} className="nav-section">
+              <div key={group.key} className="nav-section nav-section-card" style={{ '--group-color': group.color } as React.CSSProperties}>
                 <div
                   className={`nav-section-title ${hasActive ? 'section-active' : ''}`}
                   onClick={() => toggleGroup(group.key)}

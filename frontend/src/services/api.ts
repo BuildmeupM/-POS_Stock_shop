@@ -1,11 +1,15 @@
 import axios from 'axios'
 
 function getApiBaseUrl(): string {
+  // 1. Explicit env var takes priority
   const envUrl = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL
   if (envUrl && envUrl.startsWith('http')) {
     return envUrl.endsWith('/api') ? envUrl : `${envUrl}/api`
   }
-  return 'http://localhost:3001/api'
+
+  // 2. Use Vite proxy (same-origin /api) — works for both localhost and LAN
+  //    Because vite.config has proxy for /api -> backend
+  return '/api'
 }
 
 const api = axios.create({

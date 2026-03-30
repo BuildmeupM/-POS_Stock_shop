@@ -11,8 +11,9 @@ import {
   IconUser, IconPlayerPause, IconPlayerPlay, IconX, IconCheck,
   IconPercentage, IconCreditCard, IconQrcode, IconBuildingBank, IconTool,
   IconPrinter, IconClock, IconShoppingCart, IconPackage, IconCategory, IconReceipt,
-  IconWallet, IconStar, IconGift
+  IconWallet, IconStar, IconGift, IconCamera, IconCameraOff
 } from '@tabler/icons-react'
+import { Html5Qrcode } from 'html5-qrcode'
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner'
 import api from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
@@ -87,6 +88,11 @@ export default function POSPage() {
   const { user, activeCompany } = useAuthStore()
   const navigate = useNavigate()
 
+  // === Camera Barcode Scanner ===
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const cameraRef = useRef<Html5Qrcode | null>(null)
+  const cameraDivId = 'pos-camera-scanner'
+
   // === Data Queries ===
   const { data: companySettings } = useQuery({
     queryKey: ['company-current'],
@@ -137,6 +143,21 @@ export default function POSPage() {
     categories?.forEach((cat: any) => { map[String(cat.id)] = cat.name })
     return map
   }, [categories])
+
+  // === First attribute group as category tabs ===
+  const firstAttrGroup = useMemo(() => {
+    if (!attributeGroups || attributeGroups.length === 0) return null
+    return attributeGroups[0]
+  }, [attributeGroups])
+
+  const attrCategoryValues = useMemo(() => {
+    if (!firstAttrGroup) return []
+    return (firstAttrGroup.values || []).map((v: any, i: number) => ({
+      id: v.id,
+      name: v.value,
+      pal: CAT_PALETTE[i % CAT_PALETTE.length],
+    }))
+  }, [firstAttrGroup])
 
   // === Sale Mutation ===
   const saleMutation = useMutation({
@@ -241,10 +262,14 @@ export default function POSPage() {
   // === Computed ===
   const filteredProducts = useMemo(() => {
     let list = products || []
-    if (activeCategory !== 'all') {
-      list = list.filter((p: any) => String(p.category_id) === activeCategory)
+    // Filter by first attribute group (used as category tabs)
+    if (activeCategory !== 'all' && firstAttrGroup) {
+      const catValueId = Number(activeCategory)
+      list = list.filter((p: any) =>
+        (p.attributes || []).some((a: any) => a.valueId === catValueId)
+      )
     }
-    // Multi-group attribute filter (AND)
+    // Multi-group attribute filter (AND) — skip first group since it's shown as tabs
     const activeFilters = Object.entries(posAttrFilters).filter(([, v]) => v)
     if (activeFilters.length > 0) {
       list = list.filter((p: any) =>
@@ -254,7 +279,7 @@ export default function POSPage() {
       )
     }
     return list
-  }, [products, activeCategory, posAttrFilters])
+  }, [products, activeCategory, posAttrFilters, firstAttrGroup])
 
   const itemSubtotal = cart.reduce((sum, c) => sum + c.unitPrice * c.quantity, 0)
   const itemDiscountTotal = cart.reduce((sum, c) => sum + (c.discount || 0), 0)
@@ -360,6 +385,40 @@ export default function POSPage() {
     return () => window.removeEventListener('keydown', handler)
   }, [cart, heldOrders])
 
+  // === Camera Scanner ===
+  const startCamera = useCallback(async () => {
+    setCameraOpen(true)
+    // Wait for DOM to mount
+    setTimeout(async () => {
+      try {
+        const html5QrCode = new Html5Qrcode(cameraDivId)
+        cameraRef.current = html5QrCode
+        await html5QrCode.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 150 } },
+          (decodedText) => {
+            handleBarcodeScan(decodedText)
+            stopCamera()
+          },
+          () => {}
+        )
+      } catch (err) {
+        console.error('Camera error:', err)
+        notifications.show({ title: 'ไม่สามารถเปิดกล้อง', message: 'กรุณาอนุญาตการเข้าถึงกล้อง', color: 'red' })
+        setCameraOpen(false)
+      }
+    }, 300)
+  }, [handleBarcodeScan])
+
+  const stopCamera = useCallback(() => {
+    if (cameraRef.current) {
+      cameraRef.current.stop().catch(() => {})
+      cameraRef.current.clear()
+      cameraRef.current = null
+    }
+    setCameraOpen(false)
+  }, [])
+
   // === Checkout ===
   const handleCheckout = async () => {
     if (!paymentMethod || cart.length === 0) return
@@ -396,6 +455,13 @@ export default function POSPage() {
               leftSection={<IconSearch size={18} />} value={search}
               onChange={e => setSearch(e.target.value)} size="md"
               className="pos2-search" data-barcode="true" />
+            <Tooltip label="สแกนบาร์โค้ดด้วยกล้อง">
+              <ActionIcon size="xl" variant="light" color="indigo"
+                onClick={cameraOpen ? stopCamera : startCamera}
+                style={{ width: 42, height: 42, flexShrink: 0 }}>
+                {cameraOpen ? <IconCameraOff size={20} /> : <IconCamera size={20} />}
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label={lastScanned ? `ล่าสุด: ${lastScanned}` : 'Barcode Scanner'}>
               <div className={`pos2-scanner ${lastScanned ? 'active' : ''}`}>
                 <IconBarcode size={20} />
@@ -403,7 +469,22 @@ export default function POSPage() {
             </Tooltip>
           </div>
 
-          {/* Category tabs — square tiles */}
+          {/* Camera Scanner View */}
+          {cameraOpen && (
+            <div style={{
+              position: 'relative', marginBottom: 8, borderRadius: 12,
+              overflow: 'hidden', border: '2px solid var(--app-primary)',
+              background: '#000',
+            }}>
+              <div id={cameraDivId} style={{ width: '100%' }} />
+              <Button size="xs" color="red" variant="filled"
+                style={{ position: 'absolute', top: 8, right: 8, zIndex: 10 }}
+                onClick={stopCamera}
+                leftSection={<IconX size={14} />}>ปิดกล้อง</Button>
+            </div>
+          )}
+
+          {/* Category tabs — from first attribute group */}
           <ScrollArea type="never" className="pos2-cat-scroll">
             <div className="pos2-cat-row">
               <button className={`pos2-cat ${activeCategory === 'all' ? 'active' : ''}`}
@@ -412,24 +493,21 @@ export default function POSPage() {
                 <IconCategory size={20} />
                 <span>ทั้งหมด</span>
               </button>
-              {categories?.map((cat: any, i: number) => {
-                const pal = CAT_PALETTE[i % CAT_PALETTE.length]
-                return (
-                  <button key={cat.id}
-                    className={`pos2-cat ${activeCategory === String(cat.id) ? 'active' : ''}`}
-                    onClick={() => setActiveCategory(String(cat.id))}
-                    style={{ '--cat-color': pal.color, '--cat-bg': pal.light } as React.CSSProperties}>
-                    <span>{cat.name}</span>
-                  </button>
-                )
-              })}
+              {attrCategoryValues.map((cat: any) => (
+                <button key={cat.id}
+                  className={`pos2-cat ${activeCategory === String(cat.id) ? 'active' : ''}`}
+                  onClick={() => setActiveCategory(String(cat.id))}
+                  style={{ '--cat-color': cat.pal.color, '--cat-bg': cat.pal.light } as React.CSSProperties}>
+                  <span>{cat.name}</span>
+                </button>
+              ))}
             </div>
           </ScrollArea>
 
-          {/* Attribute filter selects (cascading) */}
-          {(attributeGroups || []).length > 0 && (
+          {/* Attribute filter selects (remaining groups, skip first) */}
+          {(attributeGroups || []).length > 1 && (
             <div style={{ display: 'flex', gap: 8, padding: '0 12px 8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {(attributeGroups || []).map((g: any) => (
+              {(attributeGroups || []).slice(1).map((g: any) => (
                 <Select key={g.id}
                   size="xs"
                   placeholder={g.name}
@@ -466,9 +544,15 @@ export default function POSPage() {
                   const stock = parseInt(p.total_stock) || 0
                   const outOfStock = stock <= 0
                   const inCart = cart.find(c => c.productId === p.id)
-                  const catId = String(p.category_id || '')
-                  const pal = catColorMap[catId] || CAT_PALETTE[0]
-                  const catName = catNameMap[catId] || ''
+                  // Get the first attribute group value for this product (used as category)
+                  const firstAttrVal = firstAttrGroup
+                    ? (p.attributes || []).find((a: any) => a.groupId === firstAttrGroup.id)
+                    : null
+                  const matchedCat = firstAttrVal
+                    ? attrCategoryValues.find((c: any) => c.id === firstAttrVal.valueId)
+                    : null
+                  const pal = matchedCat?.pal || CAT_PALETTE[0]
+                  const catName = matchedCat?.name || ''
                   const initial = p.name?.charAt(0)?.toUpperCase() || '?'
                   const productImgUrl = p.image_url ? `${posBackendBase}${p.image_url}` : null
 

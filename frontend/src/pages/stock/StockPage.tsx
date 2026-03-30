@@ -806,11 +806,6 @@ function ProductForm({ form, setForm, categories, attributeGroups, unitOptions, 
       </Group>
       <TextInput label="ชื่อสินค้า" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
       <TextInput label="รายละเอียด" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-      <Group grow>
-        <Select label="หมวดหมู่" data={categories} value={form.categoryId} onChange={(v) => setForm({ ...form, categoryId: v || '' })} clearable searchable />
-        <Select label="หน่วยนับ" data={unitOptions} value={form.unit}
-          onChange={(v) => setForm({ ...form, unit: v || 'ชิ้น' })} searchable />
-      </Group>
       {attributeGroups.length > 0 && (
         <Group grow>
           {attributeGroups.map((g: any) => (
@@ -822,6 +817,8 @@ function ProductForm({ form, setForm, categories, attributeGroups, unitOptions, 
           ))}
         </Group>
       )}
+      <Select label="หน่วยนับ" data={unitOptions} value={form.unit}
+        onChange={(v) => setForm({ ...form, unit: v || 'ชิ้น' })} searchable />
 
       {/* รูปภาพสินค้า */}
       <Divider label="รูปภาพสินค้า" labelPosition="center" />
@@ -868,6 +865,37 @@ function ProductForm({ form, setForm, categories, attributeGroups, unitOptions, 
         <NumberInput label="ราคาขายต่ำสุด" min={0} decimalScale={2} value={form.minSellingPrice}
           onChange={(v) => setForm({ ...form, minSellingPrice: Number(v) })} />
       </Group>
+      {/* Profit Margin Indicator */}
+      {(() => {
+        const cost = form.costPrice || 0
+        const sell = form.sellingPrice || 0
+        if (cost <= 0 && sell <= 0) return null
+        const profit = sell - cost
+        const margin = sell > 0 ? (profit / sell * 100) : 0
+        const marginColor = margin >= 30 ? '#059669' : margin >= 15 ? '#d97706' : '#dc2626'
+        const marginBg = margin >= 30 ? 'rgba(5,150,105,0.08)' : margin >= 15 ? 'rgba(217,119,6,0.08)' : 'rgba(220,38,38,0.08)'
+        return (
+          <div style={{
+            background: marginBg, borderRadius: 10, padding: '10px 16px',
+            border: `1px solid ${marginColor}22`, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <div>
+              <Text size="xs" c="dimmed">กำไรต่อชิ้น</Text>
+              <Text size="md" fw={700} c={profit >= 0 ? 'green' : 'red'}>
+                ฿{profit.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </Text>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <Text size="xs" c="dimmed">อัตรากำไร</Text>
+              <Badge size="lg" variant="light"
+                color={margin >= 30 ? 'green' : margin >= 15 ? 'yellow' : 'red'}
+                style={{ fontSize: 16, fontWeight: 700 }}>
+                {margin.toFixed(1)}%
+              </Badge>
+            </div>
+          </div>
+        )
+      })()}
       <NumberInput label="สต๊อกขั้นต่ำ (แจ้งเตือนเมื่อต่ำกว่า)" min={0} value={form.minStock}
         onChange={(v) => setForm({ ...form, minStock: Number(v) })} />
       <Button fullWidth loading={loading} onClick={onSubmit} color={color}>
@@ -886,6 +914,7 @@ function MovementTab() {
   const [productSearch, setProductSearch] = useState('')
   const [issueModal, setIssueModal] = useState(false)
   const [issueForm, setIssueForm] = useState({ productId: '', warehouseId: '', quantity: 0, note: '' })
+  const [deleteTarget, setDeleteTarget] = useState<any>(null)
   const queryClient = useQueryClient()
 
   const params: any = {}
@@ -917,6 +946,17 @@ function MovementTab() {
       queryClient.invalidateQueries({ queryKey: ['products'] })
     },
     onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถเบิกได้', color: 'red' }),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/inventory/transactions/${id}`),
+    onSuccess: () => {
+      notifications.show({ title: 'สำเร็จ', message: 'ลบรายการสำเร็จ', color: 'green' })
+      setDeleteTarget(null)
+      queryClient.invalidateQueries({ queryKey: ['transactions'] })
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+    },
+    onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถลบได้', color: 'red' }),
   })
 
   // --- Filtered ---
@@ -1023,6 +1063,7 @@ function MovementTab() {
                 <Table.Th ta="right">ราคาทุน/หน่วย</Table.Th>
                 <Table.Th>หมายเหตุ</Table.Th>
                 <Table.Th>ผู้ทำรายการ</Table.Th>
+                <Table.Th ta="center">จัดการ</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -1049,6 +1090,18 @@ function MovementTab() {
                     </Table.Td>
                     <Table.Td><Text size="xs" c="dimmed" lineClamp={1}>{t.note || '-'}</Text></Table.Td>
                     <Table.Td><Text size="xs">{t.created_by_name || '-'}</Text></Table.Td>
+                    <Table.Td ta="center">
+                      {(!t.reference_type || t.reference_type === 'MANUAL') ? (
+                        <Tooltip label="ลบรายการ">
+                          <ActionIcon size="sm" variant="light" color="red"
+                            onClick={() => setDeleteTarget(t)}>
+                            <IconTrash size={14} />
+                          </ActionIcon>
+                        </Tooltip>
+                      ) : (
+                        <Text size="xs" c="dimmed">—</Text>
+                      )}
+                    </Table.Td>
                   </Table.Tr>
                 )
               })}
@@ -1078,6 +1131,27 @@ function MovementTab() {
             })}>
             เบิกออก
           </Button>
+        </Stack>
+      </Modal>
+
+      {/* Delete Transaction Confirmation */}
+      <Modal opened={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="🗑️ ยืนยันลบรายการ" size="sm" centered>
+        <Stack gap="md">
+          <Text>ต้องการลบรายการเคลื่อนไหวนี้ใช่หรือไม่?</Text>
+          {deleteTarget && (
+            <div style={{ background: 'var(--app-surface-light)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+              <div><strong>สินค้า:</strong> {deleteTarget.product_name}</div>
+              <div><strong>ประเภท:</strong> {deleteTarget.type} | <strong>จำนวน:</strong> {deleteTarget.quantity}</div>
+            </div>
+          )}
+          <Text size="sm" c="red">⚠️ ระบบจะปรับยอดสต๊อกกลับให้อัตโนมัติ</Text>
+          <Group justify="flex-end">
+            <Button variant="light" onClick={() => setDeleteTarget(null)}>ยกเลิก</Button>
+            <Button color="red" loading={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate(deleteTarget.id)}>
+              ลบรายการ
+            </Button>
+          </Group>
         </Stack>
       </Modal>
     </>

@@ -269,9 +269,34 @@ body {
   margin-bottom: 2px;
 }
 .nav-section + .nav-section {
-  border-top: 1px solid rgba(255,255,255,0.05);
   margin-top: 2px;
   padding-top: 2px;
+}
+
+/* Bordered card wrapper per section */
+.nav-section-card {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  margin-bottom: 6px;
+  background: rgba(255,255,255,0.04);
+  transition: all 0.25s ease;
+}
+.nav-section-card + .nav-section-card {
+  border-top: 1px solid rgba(255,255,255,0.25);
+  margin-top: 0;
+  padding-top: 4px;
+}
+.nav-section-card:hover {
+  border-color: rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.06);
+}
+/* Subtle glow when section has active item */
+.nav-section-card:has(.section-active) {
+  border-color: color-mix(in srgb, var(--group-color) 30%, transparent);
+  background: color-mix(in srgb, var(--group-color) 4%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--group-color) 8%, transparent),
+              inset 0 0 8px color-mix(in srgb, var(--group-color) 3%, transparent);
 }
 
 /* Section title — colored dot + chevron */
@@ -511,21 +536,21 @@ body {
 }
 
 /* Category Tiles — large colored blocks */
-.pos2-cat-scroll { flex-shrink: 0; margin-bottom: 14px; }
+.pos2-cat-scroll { flex-shrink: 0; margin-bottom: 10px; }
 .pos2-cat-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px;
 }
 .pos2-cat {
   display: flex; align-items: center; justify-content: center;
-  gap: 6px;
-  height: 52px;
-  padding: 8px 12px;
+  gap: 4px;
+  height: 34px;
+  padding: 4px 8px;
   border-radius: var(--radius-md);
   border: none;
   background: var(--cat-bg, var(--app-surface-light));
-  cursor: pointer; font-size: 14px; font-weight: 600;
+  cursor: pointer; font-size: 11px; font-weight: 600;
   white-space: nowrap; transition: all 0.2s;
   color: var(--cat-color, var(--app-text-dim));
   font-family: inherit;

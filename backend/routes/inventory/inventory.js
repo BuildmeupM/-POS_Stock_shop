@@ -363,5 +363,85 @@ router.post('/adjust', roleCheck('owner', 'admin', 'manager'), async (req, res) 
   }
 })
 
+// DELETE /api/inventory/transactions/:id — delete a stock transaction (reverse stock)
+router.delete('/transactions/:id', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+    const txnId = req.params.id
+
+    // Get transaction info
+    const [rows] = await connection.execute(
+      `SELECT st.*, p.company_id FROM stock_transactions st
+       JOIN products p ON st.product_id = p.id
+       WHERE st.id = ?`,
+      [txnId]
+    )
+    if (rows.length === 0) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบรายการเคลื่อนไหว' })
+    }
+    const txn = rows[0]
+    if (txn.company_id !== companyId) {
+      await connection.rollback()
+      return res.status(403).json({ message: 'ไม่มีสิทธิ์ลบรายการนี้' })
+    }
+
+    // Only allow deleting MANUAL transactions
+    if (txn.reference_type && txn.reference_type !== 'MANUAL') {
+      await connection.rollback()
+      return res.status(400).json({ message: `ไม่สามารถลบรายการที่มาจาก ${txn.reference_type} ได้ กรุณายกเลิกจากต้นทาง` })
+    }
+
+    // Reverse the stock change
+    const qty = parseFloat(txn.quantity) || 0
+    if (qty > 0) {
+      // Was an IN transaction → deduct the stock back
+      if (txn.related_lot_id) {
+        await connection.execute(
+          'UPDATE stock_lots SET quantity_remaining = GREATEST(quantity_remaining - ?, 0) WHERE id = ?',
+          [qty, txn.related_lot_id]
+        )
+      }
+    } else if (qty < 0) {
+      // Was an OUT transaction → restore the stock
+      if (txn.related_lot_id) {
+        await connection.execute(
+          'UPDATE stock_lots SET quantity_remaining = quantity_remaining + ? WHERE id = ?',
+          [Math.abs(qty), txn.related_lot_id]
+        )
+      } else {
+        // No related lot — create a new lot to restore
+        const costPerUnit = parseFloat(txn.cost_per_unit) || 0
+        await connection.execute(
+          'INSERT INTO stock_lots (product_id, warehouse_id, quantity_remaining, cost_per_unit) VALUES (?, ?, ?, ?)',
+          [txn.product_id, txn.warehouse_id, Math.abs(qty), costPerUnit]
+        )
+      }
+    }
+
+    // Delete the transaction record
+    await connection.execute('DELETE FROM stock_transactions WHERE id = ?', [txnId])
+
+    await writeAuditLog({
+      companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'DELETE', entityType: 'stock_transaction', entityId: txnId,
+      description: `ลบรายการเคลื่อนไหวสต๊อก #${txnId} (${txn.type} qty=${qty})`,
+      oldValues: { type: txn.type, quantity: qty, productId: txn.product_id },
+      req,
+    })
+
+    await connection.commit()
+    res.json({ message: 'ลบรายการสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete transaction error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการลบรายการ' })
+  } finally {
+    connection.release()
+  }
+})
+
 module.exports = router
 
