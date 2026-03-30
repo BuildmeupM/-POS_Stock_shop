@@ -1,15 +1,15 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Text, Group, Table, Badge, Loader, Stack, Button, SimpleGrid, Divider,
-  ActionIcon, Timeline, ThemeIcon, Modal,
+  ActionIcon, Timeline, ThemeIcon, Modal, Select, NumberInput,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
   IconArrowLeft, IconContract, IconPrinter, IconUser, IconCalendar,
   IconPercentage, IconCash, IconPackage, IconRefresh, IconArrowRight,
-  IconPackageImport, IconPackageExport, IconReceipt, IconNote, IconTrash,
+  IconPackageImport, IconPackageExport, IconReceipt, IconNote, IconTrash, IconPlus,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 
@@ -70,6 +70,41 @@ export default function ConsignmentDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [receiveOpen, setReceiveOpen] = useState(false)
+  const [recItems, setRecItems] = useState([{ productId: '', quantity: 1, sellingPrice: 0 }])
+
+  const { data: products = [] } = useQuery({
+    queryKey: ['products-for-consignment'],
+    queryFn: () => api.get('/products').then(r => r.data),
+    enabled: receiveOpen,
+  })
+
+  const productOptions = products.map((p: any) => ({ value: String(p.id), label: `${p.sku} — ${p.name}` }))
+
+  const handleRecProductChange = useCallback((index: number, productId: string) => {
+    const updated = [...recItems]
+    updated[index].productId = productId
+    if (productId) {
+      const product = products.find((p: any) => String(p.id) === productId)
+      if (product) {
+        updated[index].sellingPrice = parseFloat(product.selling_price) || 0
+      }
+    }
+    setRecItems(updated)
+  }, [recItems, products])
+
+  const receiveMutation = useMutation({
+    mutationFn: (data: any) => api.post('/consignment/stock/receive', data),
+    onSuccess: () => {
+      notifications.show({ title: 'สำเร็จ', message: 'รับสินค้าฝากขายเรียบร้อย', color: 'green' })
+      queryClient.invalidateQueries({ queryKey: ['consignment-agreement', id] })
+      queryClient.invalidateQueries({ queryKey: ['consignment-transactions', id] })
+      queryClient.invalidateQueries({ queryKey: ['consignment-stock'] })
+      setReceiveOpen(false)
+      setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }])
+    },
+    onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับสินค้าได้', color: 'red' }),
+  })
 
   const { data: agreement, isLoading } = useQuery({
     queryKey: ['consignment-agreement', id],
@@ -412,9 +447,18 @@ export default function ConsignmentDetailPage() {
 
       {/* ═══ Stock Table ═══ */}
       <Card shadow="xs" padding="lg" radius="md" withBorder>
-        <Group gap={8} mb="md">
-          <Badge color="indigo" variant="filled" size="lg">สินค้าในสัญญา</Badge>
-          <Text size="sm" c="dimmed">{stockItems.length} รายการ</Text>
+        <Group justify="space-between" mb="md">
+          <Group gap={8}>
+            <Badge color="indigo" variant="filled" size="lg">สินค้าในสัญญา</Badge>
+            <Text size="sm" c="dimmed">{stockItems.length} รายการ</Text>
+          </Group>
+          {ag.status === 'active' && (
+            <Button size="sm" leftSection={<IconPackageImport size={16} />}
+              style={{ background: 'linear-gradient(135deg, #0d9488, #0f766e)' }}
+              onClick={() => setReceiveOpen(true)}>
+              รับสินค้าเข้า
+            </Button>
+          )}
         </Group>
         {stockItems.length === 0 ? (
           <Text ta="center" c="dimmed" py="xl">ยังไม่มีสินค้าในสัญญานี้</Text>
@@ -496,6 +540,108 @@ export default function ConsignmentDetailPage() {
           </Timeline>
         </Card>
       )}
+
+      {/* ═══ Modal: รับสินค้าเข้า ═══ */}
+      <Modal opened={receiveOpen} onClose={() => { setReceiveOpen(false); setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }]) }}
+        title={null} centered size="xl" padding={0}
+        styles={{ header: { display: 'none' }, body: { padding: 0 } }}>
+        <div style={{
+          background: 'linear-gradient(135deg, #0d9488, #0f766e)', padding: '20px 24px',
+          borderRadius: '8px 8px 0 0',
+        }}>
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Text size="lg" fw={800} c="white">รับสินค้าฝากขายเข้า</Text>
+              <Text size="xs" c="rgba(255,255,255,0.6)" mt={2}>
+                สัญญา {ag.agreement_number} — {ag.contact_name}
+              </Text>
+            </div>
+            <ActionIcon variant="subtle" color="white" size="sm" onClick={() => { setReceiveOpen(false); setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }]) }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>&times;</span>
+            </ActionIcon>
+          </Group>
+        </div>
+        <div style={{ padding: '20px 24px' }}>
+          <Stack gap="md">
+            {/* Item table header */}
+            <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderBottom: '2px solid var(--app-border)' }}>
+              <Text size="xs" c="dimmed" fw={700} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>#</Text>
+              <Text size="xs" c="dimmed" fw={700} style={{ flex: 2, minWidth: 160 }}>สินค้า</Text>
+              <Text size="xs" c="dimmed" fw={700} style={{ width: 75, textAlign: 'center' }}>จำนวน</Text>
+              <Text size="xs" c="dimmed" fw={700} style={{ width: 120, textAlign: 'center' }}>ราคาขาย</Text>
+              <Text size="xs" c="dimmed" fw={700} style={{ width: 90, textAlign: 'right' }}>มูลค่า</Text>
+              <div style={{ width: 32, flexShrink: 0 }}></div>
+            </div>
+            {recItems.map((item, i) => {
+              const lineTotal = item.quantity * item.sellingPrice
+              return (
+                <div key={i} style={{ display: 'flex', gap: 8, padding: '10px 0', alignItems: 'center', borderBottom: '1px solid var(--app-border)' }}>
+                  <Text size="sm" c="dimmed" fw={600} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>{i + 1}</Text>
+                  <div style={{ flex: 2, minWidth: 160 }}>
+                    <Select size="sm" searchable clearable placeholder="เลือกสินค้า"
+                      data={productOptions} value={item.productId}
+                      onChange={v => handleRecProductChange(i, v || '')} />
+                  </div>
+                  <NumberInput size="sm" min={1} value={item.quantity} style={{ width: 75 }}
+                    styles={{ input: { textAlign: 'center' } }} hideControls
+                    onChange={v => { const u = [...recItems]; u[i].quantity = Number(v) || 1; setRecItems(u) }} />
+                  <NumberInput size="sm" min={0} decimalScale={2} value={item.sellingPrice} style={{ width: 120 }}
+                    styles={{ input: { textAlign: 'right' } }} hideControls
+                    onChange={v => { const u = [...recItems]; u[i].sellingPrice = Number(v) || 0; setRecItems(u) }} />
+                  <Text size="sm" fw={600} c="teal" style={{ width: 90, textAlign: 'right' }}>
+                    {item.productId ? `฿${fmt(lineTotal)}` : ''}
+                  </Text>
+                  <ActionIcon size="sm" variant="subtle" color="red" style={{ flexShrink: 0 }}
+                    disabled={recItems.length <= 1} onClick={() => setRecItems(recItems.filter((_, j) => j !== i))}>
+                    <IconTrash size={14} />
+                  </ActionIcon>
+                </div>
+              )
+            })}
+            <Button variant="light" size="xs" color="teal" leftSection={<IconPlus size={14} />}
+              onClick={() => setRecItems([...recItems, { productId: '', quantity: 1, sellingPrice: 0 }])}>
+              เพิ่มรายการ
+            </Button>
+
+            {(() => {
+              const validItems = recItems.filter(i => i.productId)
+              const totalQty = validItems.reduce((s, i) => s + i.quantity, 0)
+              const totalVal = validItems.reduce((s, i) => s + i.quantity * i.sellingPrice, 0)
+              return validItems.length > 0 ? (
+                <Card padding="sm" radius="md" withBorder style={{ background: 'rgba(5,150,105,0.04)', border: '1px solid rgba(5,150,105,0.15)' }}>
+                  <Group justify="space-between">
+                    <div>
+                      <Text size="xs" c="dimmed">จำนวนรวม</Text>
+                      <Text size="sm" fw={700}>{fmtInt(totalQty)} ชิ้น</Text>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <Text size="xs" c="dimmed">มูลค่ารวม (ราคาขาย)</Text>
+                      <Text size="lg" fw={800} c="green">฿{fmt(totalVal)}</Text>
+                    </div>
+                  </Group>
+                </Card>
+              ) : null
+            })()}
+
+            <Divider />
+            <Group justify="flex-end">
+              <Button variant="subtle" color="gray" onClick={() => { setReceiveOpen(false); setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }]) }}>
+                ยกเลิก
+              </Button>
+              <Button loading={receiveMutation.isPending}
+                disabled={recItems.filter(i => i.productId).length === 0}
+                leftSection={<IconPackageImport size={16} />}
+                onClick={() => receiveMutation.mutate({
+                  agreementId: parseInt(id!),
+                  items: recItems.filter(i => i.productId).map(i => ({ ...i, productId: parseInt(i.productId) })),
+                })}
+                style={{ background: 'linear-gradient(135deg, #0d9488, #0f766e)' }}>
+                รับสินค้าเข้า
+              </Button>
+            </Group>
+          </Stack>
+        </div>
+      </Modal>
 
       {/* ═══ Modal ยืนยันลบ ═══ */}
       <Modal opened={deleteConfirm} onClose={() => setDeleteConfirm(false)}
