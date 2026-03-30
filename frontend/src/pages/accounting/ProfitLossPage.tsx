@@ -25,7 +25,12 @@ export default function ProfitLossPage() {
 
   const sd = data?.salesData || {}
   const ed = data?.expenseData || {}
-  const netProfit = (sd.totalSales || 0) - (sd.totalCogs || 0) - (ed.totalExpenses || 0)
+  // Filter out account 4100 from journal revenue — POS auto-journals credit 4100,
+  // which is already counted in sd.totalSales. Only add non-POS journal revenue.
+  const extraRevenue = (data?.revenue || []).filter((r: any) => r.account_code !== '4100')
+  const extraRevenueTotal = extraRevenue.reduce((s: number, r: any) => s + parseFloat(r.amount), 0)
+  const totalRevenue = (sd.totalSales || 0) + extraRevenueTotal
+  const netProfit = totalRevenue - (sd.totalCogs || 0) - (ed.totalExpenses || 0)
 
   return (
     <Stack gap="lg">
@@ -47,7 +52,7 @@ export default function ProfitLossPage() {
             <IconArrowUp size={18} color="var(--app-success)" />
             <Text size="xs" c="dimmed" fw={600}>รายได้จากการขาย</Text>
           </Group>
-          <Text size="xl" fw={800} c="green">฿{fmt(sd.totalSales || 0)}</Text>
+          <Text size="xl" fw={800} c="green">฿{fmt(totalRevenue)}</Text>
         </Card>
         <Card shadow="xs" padding="md" radius="md" withBorder>
           <Group gap={8} mb={4}>
@@ -70,7 +75,7 @@ export default function ProfitLossPage() {
             <Text size="xs" c="dimmed" fw={600}>กำไร (ขาดทุน) สุทธิ</Text>
           </Group>
           <Text size="xl" fw={800} c={netProfit >= 0 ? 'green' : 'red'}>
-            ฿{fmt(netProfit)}
+            ฿{fmt(netProfit + 0)}
           </Text>
         </Card>
       </SimpleGrid>
@@ -94,8 +99,8 @@ export default function ProfitLossPage() {
               <Table.Td><Text size="sm" c="dimmed" pl={20}>ภาษีขาย (VAT)</Text></Table.Td>
               <Table.Td ta="right"><Text size="sm" c="dimmed">฿{fmt(sd.totalVat || 0)}</Text></Table.Td>
             </Table.Tr>
-            {/* Journal-based revenue */}
-            {(data?.revenue || []).map((r: any) => (
+            {/* Journal-based revenue (excluding 4100 which is captured in POS sales above) */}
+            {extraRevenue.map((r: any) => (
               <Table.Tr key={r.id}>
                 <Table.Td>
                   <Text size="sm" c="dimmed" pl={20}>{r.account_code} — {r.name}</Text>
@@ -107,7 +112,7 @@ export default function ProfitLossPage() {
           <Table.Tfoot>
             <Table.Tr style={{ borderTop: '2px solid var(--app-border)' }}>
               <Table.Th><Text fw={700}>รวมรายได้</Text></Table.Th>
-              <Table.Th ta="right"><Text fw={700} c="green">฿{fmt(sd.totalSales || 0)}</Text></Table.Th>
+              <Table.Th ta="right"><Text fw={700} c="green">฿{fmt(totalRevenue)}</Text></Table.Th>
             </Table.Tr>
           </Table.Tfoot>
         </Table>
@@ -183,11 +188,11 @@ export default function ProfitLossPage() {
         <Group justify="space-between">
           <Text size="lg" fw={800}>กำไร (ขาดทุน) สุทธิ</Text>
           <Text size="xl" fw={800} c={netProfit >= 0 ? 'green' : 'red'}>
-            ฿{fmt(netProfit)}
+            ฿{fmt(netProfit + 0)}
           </Text>
         </Group>
         <Text size="xs" c="dimmed" mt={4}>
-          = รายได้ ฿{fmt(sd.totalSales || 0)} − ต้นทุน ฿{fmt(sd.totalCogs || 0)} − ค่าใช้จ่าย ฿{fmt(ed.totalExpenses || 0)}
+          = รายได้ ฿{fmt(totalRevenue)} − ต้นทุน ฿{fmt(sd.totalCogs || 0)} − ค่าใช้จ่าย ฿{fmt(ed.totalExpenses || 0)}
         </Text>
       </Card>
     </Stack>

@@ -215,6 +215,38 @@ async function run() {
     ]
   })
 
+  // === 9. fix account type for revenue accounts ===
+  migrations.push({
+    name: 'fix_account_types',
+    stmts: [
+      `UPDATE accounts SET account_type = 'revenue' WHERE account_code IN ('4000','4100','4200','4300') AND account_type != 'revenue'`,
+    ]
+  })
+
+  // === 10. add missing accounts for consignment & journal entries ===
+  migrations.push({
+    name: 'add_missing_accounts',
+    stmts: [
+      // For each existing company, insert accounts that are used by the system but missing from seed
+      `INSERT IGNORE INTO accounts (company_id, account_code, name, account_type)
+       SELECT c.id, '1130', 'ลูกหนี้ฝากขาย', 'asset'
+       FROM companies c
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.company_id = c.id AND a.account_code = '1130')`,
+      `INSERT IGNORE INTO accounts (company_id, account_code, name, account_type)
+       SELECT c.id, '2120', 'ภาษีขาย (VAT) ค้างจ่าย', 'liability'
+       FROM companies c
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.company_id = c.id AND a.account_code = '2120')`,
+      `INSERT IGNORE INTO accounts (company_id, account_code, name, account_type)
+       SELECT c.id, '2130', 'ภาษีหัก ณ ที่จ่ายค้างจ่าย', 'liability'
+       FROM companies c
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.company_id = c.id AND a.account_code = '2130')`,
+      `INSERT IGNORE INTO accounts (company_id, account_code, name, account_type)
+       SELECT c.id, '2150', 'เจ้าหนี้ผู้ฝากขาย', 'liability'
+       FROM companies c
+       WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.company_id = c.id AND a.account_code = '2150')`,
+    ]
+  })
+
   // Run all
   let totalOk = 0, totalSkip = 0, totalErr = 0
   for (const m of migrations) {

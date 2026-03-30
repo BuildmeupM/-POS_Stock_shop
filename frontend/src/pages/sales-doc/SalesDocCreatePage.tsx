@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   TextInput, Button, Group, Text, Stack, Select, NumberInput, Textarea,
-  Card, SimpleGrid, Table, ActionIcon, Divider, Badge, ThemeIcon, Modal,
+  Card, SimpleGrid, Table, ActionIcon, Divider, Badge, ThemeIcon, Modal, SegmentedControl,
 } from '@mantine/core'
 import { DatePickerInput } from '@mantine/dates'
 import { notifications } from '@mantine/notifications'
@@ -83,6 +83,7 @@ export default function SalesDocCreatePage() {
   const [payChannelId, setPayChannelId] = useState<string | null>(null)
   const [priceType, setPriceType] = useState(vatEnabled ? 'include_vat' : 'no_vat')
   const [discountAmount, setDiscountAmount] = useState(0)
+  const [discountType, setDiscountType] = useState<'baht' | 'percent'>('baht')
   const [note, setNote] = useState('')
   const [items, setItems] = useState([
     { productId: '', description: '', quantity: 1, unit: 'ชิ้น', unitPrice: 0, discountPerUnit: 0, discountType: 'baht' as const, vatType: (vatEnabled ? 'vat7' : 'no_vat') as 'vat7' | 'vat0' | 'no_vat' },
@@ -204,11 +205,11 @@ export default function SalesDocCreatePage() {
       subtotal += lineTotal; totalVat += lineVat
       return { lineTotal, lineVat }
     })
-    const disc = discountAmount || 0
+    const disc = discountType === 'percent' ? subtotal * (discountAmount || 0) / 100 : (discountAmount || 0)
     const amtBeforeVat = priceType === 'include_vat' ? subtotal - totalVat - disc : subtotal - disc
     const fVat = priceType === 'no_vat' ? 0 : totalVat
     return { rows, subtotal, totalVat: fVat, amtBeforeVat, discount: disc, total: amtBeforeVat + fVat }
-  }, [items, discountAmount, priceType, vatRate])
+  }, [items, discountAmount, discountType, priceType, vatRate])
 
   // Submit
   const createMutation = useMutation({
@@ -218,6 +219,9 @@ export default function SalesDocCreatePage() {
   })
 
   const handleSubmit = (status: 'draft' | 'approved') => {
+    if (!docDate) {
+      notifications.show({ title: 'ผิดพลาด', message: 'กรุณาระบุวันที่ออกเอกสาร', color: 'red' }); return
+    }
     if (items.filter(i => i.productId || i.description).length === 0) {
       notifications.show({ title: 'ผิดพลาด', message: 'กรุณาเพิ่มรายการอย่างน้อย 1 รายการ', color: 'red' }); return
     }
@@ -235,7 +239,7 @@ export default function SalesDocCreatePage() {
       customerId: customerId && !customerId.startsWith('ct_') ? parseInt(customerId) : null,
       customerName, customerAddress, customerTaxId, customerPhone,
       docDate: docDate?.toISOString().split('T')[0], dueDate: dueDate?.toISOString().split('T')[0] || null,
-      priceType, discountAmount, note, status,
+      priceType, discountAmount: calc.discount, note, status,
       payNow, paymentMethod: channel?.type || 'cash', paymentChannelId: channel?.id || null,
       items: items.filter(i => i.productId || i.description).map(i => ({
         productId: i.productId && !i.productId.startsWith('ct_') ? parseInt(i.productId) : null,
@@ -380,7 +384,7 @@ export default function SalesDocCreatePage() {
           <Text size="xs" c="dimmed" fw={700} style={{ flex: 2, minWidth: 180 }}>สินค้า/บริการ</Text>
           <Text size="xs" c="dimmed" fw={700} style={{ width: 85, textAlign: 'center' }}>จำนวน</Text>
           <Text size="xs" c="dimmed" fw={700} style={{ width: 120, textAlign: 'center' }}>ราคา/หน่วย</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 110, textAlign: 'center' }}>ส่วนลด/หน่วย</Text>
+          <Text size="xs" c="dimmed" fw={700} style={{ width: 160, textAlign: 'center' }}>ส่วนลด/หน่วย</Text>
           <Text size="xs" c="dimmed" fw={700} style={{ width: 90, textAlign: 'center' }}>ภาษี</Text>
           <Text size="xs" c="dimmed" fw={700} style={{ width: 100, textAlign: 'right', flexShrink: 0 }}>มูลค่า</Text>
           <div style={{ width: 30, flexShrink: 0 }}></div>
@@ -405,10 +409,18 @@ export default function SalesDocCreatePage() {
                   thousandSeparator="," style={{ width: 120 }}
                   styles={{ input: { textAlign: 'right' } }}
                   onChange={v => updateItem(i, 'unitPrice', Number(v) || 0)} />
-                <NumberInput size="sm" min={0} value={item.discountPerUnit} decimalScale={2} fixedDecimalScale
-                  thousandSeparator="," style={{ width: 110 }}
-                  styles={{ input: { textAlign: 'right' } }}
-                  onChange={v => updateItem(i, 'discountPerUnit', Number(v) || 0)} />
+                <div style={{ width: 160, display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <SegmentedControl size="xs" value={item.discountType}
+                    onChange={v => { updateItem(i, 'discountType', v); updateItem(i, 'discountPerUnit', 0) }}
+                    data={[{ value: 'baht', label: '฿' }, { value: 'percent', label: '%' }]}
+                    style={{ flexShrink: 0 }} />
+                  <NumberInput size="sm" min={0} max={item.discountType === 'percent' ? 100 : undefined}
+                    value={item.discountPerUnit} decimalScale={2}
+                    style={{ flex: 1 }}
+                    styles={{ input: { textAlign: 'right' } }} hideControls
+                    rightSection={item.discountType === 'percent' ? <Text size="xs" c="dimmed" mr={8}>%</Text> : null}
+                    onChange={v => updateItem(i, 'discountPerUnit', Number(v) || 0)} />
+                </div>
                 <Select size="sm" value={vatEnabled ? item.vatType : 'no_vat'} style={{ width: 90 }}
                   disabled={!vatEnabled}
                   data={[
@@ -481,10 +493,22 @@ export default function SalesDocCreatePage() {
             </Group>
             <Group justify="space-between" align="center">
               <Text size="sm" c="dimmed">ส่วนลดรวม</Text>
-              <NumberInput size="xs" min={0} value={discountAmount} style={{ width: 110 }}
-                onChange={v => setDiscountAmount(Number(v) || 0)} hideControls decimalScale={2}
-                leftSection={<Text size="xs" c="dimmed">฿</Text>} />
+              <Group gap={4}>
+                <SegmentedControl size="xs" value={discountType}
+                  onChange={v => { setDiscountType(v as 'baht' | 'percent'); setDiscountAmount(0) }}
+                  data={[{ value: 'baht', label: '฿' }, { value: 'percent', label: '%' }]}
+                  style={{ flexShrink: 0 }} />
+                <NumberInput size="xs" min={0} max={discountType === 'percent' ? 100 : undefined}
+                  value={discountAmount} style={{ width: 90 }}
+                  onChange={v => setDiscountAmount(Number(v) || 0)} hideControls decimalScale={2}
+                  rightSection={discountType === 'percent' ? <Text size="xs" c="dimmed" mr={6}>%</Text> : null} />
+              </Group>
             </Group>
+            {discountType === 'percent' && calc.discount > 0 && (
+              <Group justify="flex-end">
+                <Text size="xs" c="red">-฿{fmt(calc.discount)}</Text>
+              </Group>
+            )}
             {priceType !== 'no_vat' && (
               <>
                 <Divider variant="dashed" my={4} />

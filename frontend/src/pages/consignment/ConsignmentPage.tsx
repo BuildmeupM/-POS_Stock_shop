@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Text, Group, Table, Badge, Loader, Stack, Button, Modal, TextInput, NumberInput,
@@ -49,7 +50,16 @@ type Tab = 'agreements' | 'stock' | 'settlements'
 
 export default function ConsignmentPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('agreements')
+
+  // ── Modal states (must be declared before queries that reference them) ──
+  const [addAgOpen, setAddAgOpen] = useState(false)
+  const [receiveOpen, setReceiveOpen] = useState(false)
+  const [returnOpen, setReturnOpen] = useState(false)
+  const [settleOpen, setSettleOpen] = useState(false)
+  const [renewOpen, setRenewOpen] = useState(false)
+  const [saleOpen, setSaleOpen] = useState(false)
 
   // ── Data queries ──
   const { data: vendors = [] } = useQuery({
@@ -67,44 +77,78 @@ export default function ConsignmentPage() {
   const { data: stock = [], isLoading: loadSt } = useQuery({
     queryKey: ['consignment-stock'],
     queryFn: () => api.get('/consignment/stock').then(r => r.data),
-    enabled: tab === 'stock',
+    enabled: tab === 'stock' || saleOpen || returnOpen,
   })
   const { data: settlements = [], isLoading: loadSet } = useQuery({
     queryKey: ['consignment-settlements'],
     queryFn: () => api.get('/consignment/settlements').then(r => r.data),
     enabled: tab === 'settlements',
   })
-
-  // ── Modal states ──
-  const [addAgOpen, setAddAgOpen] = useState(false)
-  const [receiveOpen, setReceiveOpen] = useState(false)
-  const [returnOpen, setReturnOpen] = useState(false)
-  const [settleOpen, setSettleOpen] = useState(false)
-  const [renewOpen, setRenewOpen] = useState(false)
   const [renewAgId, setRenewAgId] = useState<number | null>(null)
   const [renewForm, setRenewForm] = useState({ newEndDate: null as Date | null, commissionType: 'percent', commissionRate: 15, paymentTerms: 30, note: '' })
   const [lastRenewal, setLastRenewal] = useState<any>(null)
   const [settlementDetail, setSettlementDetail] = useState<any>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [confirmPayId, setConfirmPayId] = useState<number | null>(null)
+  const [confirmPayMethod, setConfirmPayMethod] = useState<string>('transfer')
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
+  const [confirmDeleteAgId, setConfirmDeleteAgId] = useState<number | null>(null)
 
-  // ── Agreement form ──
+  // ── Agreement form (2-step) ──
+  const [agStep, setAgStep] = useState<1 | 2>(1)
   const [agForm, setAgForm] = useState({ contactId: '', startDate: null as Date | null, endDate: null as Date | null, commissionType: 'percent', commissionRate: 15, paymentTerms: 30, note: '' })
+  const [agItems, setAgItems] = useState([{ productId: '', quantity: 1, sellingPrice: 0 }])
+
+  const handleAgProductChange = useCallback((index: number, productId: string) => {
+    const updated = [...agItems]
+    updated[index].productId = productId
+    if (productId) {
+      const product = products.find((p: any) => String(p.id) === productId)
+      if (product) {
+        updated[index].sellingPrice = parseFloat(product.selling_price) || 0
+      }
+    }
+    setAgItems(updated)
+  }, [agItems, products])
+
+  const resetAgForm = () => {
+    setAgStep(1)
+    setAgForm({ contactId: '', startDate: null, endDate: null, commissionType: 'percent', commissionRate: 15, paymentTerms: 30, note: '' })
+    setAgItems([{ productId: '', quantity: 1, sellingPrice: 0 }])
+  }
 
   const createAgMutation = useMutation({
-    mutationFn: (data: any) => api.post('/consignment/agreements', data),
+    mutationFn: async (data: any) => {
+      // Step 1: Create agreement
+      const agRes = await api.post('/consignment/agreements', data.agreement)
+      // Step 2: Receive stock (if items provided)
+      const validItems = data.items.filter((i: any) => i.productId)
+      if (validItems.length > 0) {
+        await api.post('/consignment/stock/receive', {
+          agreementId: agRes.data.agreementId,
+          items: validItems.map((i: any) => ({ ...i, productId: parseInt(i.productId) })),
+        })
+      }
+      return agRes
+    },
     onSuccess: (res) => {
-      notifications.show({ title: 'สำเร็จ', message: `สร้างสัญญา ${res.data.agreementNumber}`, color: 'green' })
+      const hasItems = agItems.filter(i => i.productId).length > 0
+      notifications.show({
+        title: 'สำเร็จ',
+        message: `สร้างสัญญา ${res.data.agreementNumber}${hasItems ? ` + รับสินค้า ${agItems.filter(i => i.productId).length} รายการ` : ''}`,
+        color: 'green',
+      })
       queryClient.invalidateQueries({ queryKey: ['consignment-agreements'] })
+      queryClient.invalidateQueries({ queryKey: ['consignment-stock'] })
       setAddAgOpen(false)
+      resetAgForm()
     },
     onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถสร้างได้', color: 'red' }),
   })
 
   // ── Receive form ──
   const [recAgId, setRecAgId] = useState('')
-  const [recItems, setRecItems] = useState([{ productId: '', quantity: 1, consignorPrice: 0, sellingPrice: 0 }])
+  const [recItems, setRecItems] = useState([{ productId: '', quantity: 1, sellingPrice: 0 }])
 
   const receiveMutation = useMutation({
     mutationFn: (data: any) => api.post('/consignment/stock/receive', data),
@@ -113,7 +157,7 @@ export default function ConsignmentPage() {
       queryClient.invalidateQueries({ queryKey: ['consignment-stock'] })
       queryClient.invalidateQueries({ queryKey: ['consignment-agreements'] })
       setReceiveOpen(false)
-      setRecItems([{ productId: '', quantity: 1, consignorPrice: 0, sellingPrice: 0 }])
+      setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }])
     },
     onError: (err: any) => notifications.show({ title: 'ผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรับสินค้าได้', color: 'red' }),
   })
@@ -133,7 +177,6 @@ export default function ConsignmentPage() {
   })
 
   // ── Record sale form (บันทึกยอดขายฝากขาย) ──
-  const [saleOpen, setSaleOpen] = useState(false)
   const [saleAgId, setSaleAgId] = useState('')
   const [saleDate, setSaleDate] = useState<Date | null>(new Date())
   const [saleNote, setSaleNote] = useState('')
@@ -228,8 +271,20 @@ export default function ConsignmentPage() {
     onError: (err: any) => { notifications.show({ title: 'ลบไม่สำเร็จ', message: err.response?.data?.message || 'ไม่สามารถลบใบสรุปได้ กรุณาลองใหม่', color: 'red' }); setConfirmDeleteId(null) },
   })
 
+  const deleteAgMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/consignment/agreements/${id}`),
+    onSuccess: () => {
+      notifications.show({ title: 'สำเร็จ', message: 'ลบสัญญาฝากขายสำเร็จ', color: 'green' })
+      queryClient.invalidateQueries({ queryKey: ['consignment-agreements'] })
+      queryClient.invalidateQueries({ queryKey: ['consignment-stock'] })
+      queryClient.invalidateQueries({ queryKey: ['consignment-settlements'] })
+      setConfirmDeleteAgId(null)
+    },
+    onError: (err: any) => { notifications.show({ title: 'ลบไม่สำเร็จ', message: err.response?.data?.message || 'ไม่สามารถลบสัญญาได้', color: 'red' }); setConfirmDeleteAgId(null) },
+  })
+
   const payMutation = useMutation({
-    mutationFn: (id: number) => api.post(`/consignment/settlements/${id}/pay`, { paymentMethod: 'transfer' }),
+    mutationFn: ({ id, method }: { id: number; method: string }) => api.post(`/consignment/settlements/${id}/pay`, { paymentMethod: method }),
     onSuccess: () => {
       notifications.show({ title: 'สำเร็จ', message: 'บันทึกจ่ายเงินเรียบร้อย', color: 'green' })
       queryClient.invalidateQueries({ queryKey: ['consignment-settlements'] })
@@ -270,14 +325,11 @@ export default function ConsignmentPage() {
     if (productId) {
       const product = products.find((p: any) => String(p.id) === productId)
       if (product) {
-        updated[index].consignorPrice = parseFloat(product.cost_price) || 0
         updated[index].sellingPrice = parseFloat(product.selling_price) || 0
       }
-      // Also try to fill from existing consignment stock (last known prices)
       if (recAgId) {
         const existing = stock.find((s: any) => String(s.product_id) === productId && String(s.agreement_id) === recAgId)
         if (existing) {
-          updated[index].consignorPrice = parseFloat(existing.consignor_price) || updated[index].consignorPrice
           updated[index].sellingPrice = parseFloat(existing.selling_price) || updated[index].sellingPrice
         }
       }
@@ -326,9 +378,9 @@ export default function ConsignmentPage() {
     if (!ag) return
     const rows = items.filter(i => i.productId).map(i => {
       const p = products.find((pr: any) => String(pr.id) === i.productId)
-      return `<tr><td>${p?.sku || ''}</td><td>${p?.name || ''}</td><td class="r">${fmtInt(i.quantity)}</td><td class="r">฿${fmt(i.consignorPrice)}</td><td class="r">฿${fmt(i.sellingPrice)}</td><td class="r">฿${fmt(i.quantity * i.consignorPrice)}</td></tr>`
+      return `<tr><td>${p?.sku || ''}</td><td>${p?.name || ''}</td><td class="r">${fmtInt(i.quantity)}</td><td class="r">฿${fmt(i.sellingPrice)}</td><td class="r">฿${fmt(i.quantity * i.sellingPrice)}</td></tr>`
     }).join('')
-    const total = items.filter(i => i.productId).reduce((s, i) => s + i.quantity * i.consignorPrice, 0)
+    const total = items.filter(i => i.productId).reduce((s, i) => s + i.quantity * i.sellingPrice, 0)
     openPrintWindow(`ใบรับสินค้าฝากขาย`, `<div class="page">
       <div class="header"><div class="title">ใบรับสินค้าฝากขาย</div><div class="title-en">CONSIGNMENT RECEIVING NOTE</div>
         <div class="doc-date">วันที่: ${new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' })}</div></div>
@@ -338,9 +390,9 @@ export default function ConsignmentPage() {
           <div class="info-row"><span class="label">ผู้ฝากขาย</span><span class="value">${ag.contact_name}</span></div></div>
         <div class="info-box"><div class="info-label">สรุป</div>
           <div class="info-row"><span class="label">จำนวนรายการ</span><span class="value">${items.filter(i => i.productId).length} รายการ</span></div>
-          <div class="info-row"><span class="label">มูลค่ารวม (ราคาผู้ฝาก)</span><span class="value">฿${fmt(total)}</span></div></div>
+          <div class="info-row"><span class="label">มูลค่ารวม</span><span class="value">฿${fmt(total)}</span></div></div>
       </div>
-      <table><thead><tr><th>SKU</th><th>สินค้า</th><th class="r">จำนวน</th><th class="r">ราคาผู้ฝาก</th><th class="r">ราคาขาย</th><th class="r">รวม</th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>SKU</th><th>สินค้า</th><th class="r">จำนวน</th><th class="r">ราคาขาย</th><th class="r">รวม</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="sig">
         <div class="sig-box"><div class="sig-line">ผู้ส่งมอบ (ผู้ฝากขาย)</div><div class="sig-date">วันที่ ____/____/________</div></div>
         <div class="sig-box"><div class="sig-line">ผู้รับสินค้า</div><div class="sig-date">วันที่ ____/____/________</div></div>
@@ -496,7 +548,13 @@ export default function ConsignmentPage() {
                       const isExpiringSoon = a.status === 'active' && a.end_date && Math.ceil((new Date(a.end_date).getTime() - Date.now()) / 86400000) <= 30
                       return (
                         <Table.Tr key={a.id} style={isExpiringSoon ? { background: 'rgba(251, 191, 36, 0.08)' } : undefined}>
-                          <Table.Td><Text size="sm" ff="monospace" fw={600}>{a.agreement_number}</Text></Table.Td>
+                          <Table.Td>
+                            <Text size="sm" ff="monospace" fw={600} c="indigo"
+                              style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'rgba(99,102,241,0.3)' }}
+                              onClick={() => navigate(`/consignment/${a.id}`)}>
+                              {a.agreement_number}
+                            </Text>
+                          </Table.Td>
                           <Table.Td><Text size="sm" fw={500}>{a.contact_name}</Text></Table.Td>
                           <Table.Td ta="center">
                             <Badge variant="light" color="violet">
@@ -512,13 +570,33 @@ export default function ConsignmentPage() {
                             </Badge>
                           </Table.Td>
                           <Table.Td ta="center">
-                            {(a.status === 'active' || a.status === 'expired') && parseInt(a.total_on_hand) > 0 && (
-                              <Button size="xs" variant="light" color="indigo"
-                                leftSection={<IconRefresh size={14} />}
-                                onClick={() => openRenew(a)}>
-                                ฝากต่อ
-                              </Button>
-                            )}
+                            <Group gap={4} justify="center">
+                              {(a.status === 'active' || a.status === 'expired') && parseInt(a.total_on_hand) > 0 && (
+                                <Button size="xs" variant="light" color="indigo"
+                                  leftSection={<IconRefresh size={14} />}
+                                  onClick={() => openRenew(a)}>
+                                  ฝากต่อ
+                                </Button>
+                              )}
+                              {confirmDeleteAgId === a.id ? (
+                                <Group gap={4}>
+                                  <Button size="compact-xs" color="red"
+                                    loading={deleteAgMutation.isPending}
+                                    onClick={() => deleteAgMutation.mutate(a.id)}>
+                                    ยืนยันลบ
+                                  </Button>
+                                  <Button size="compact-xs" color="gray" variant="light"
+                                    onClick={() => setConfirmDeleteAgId(null)}>
+                                    ยกเลิก
+                                  </Button>
+                                </Group>
+                              ) : (
+                                <ActionIcon size="sm" variant="light" color="red"
+                                  onClick={() => setConfirmDeleteAgId(a.id)}>
+                                  <IconTrash size={14} />
+                                </ActionIcon>
+                              )}
+                            </Group>
                           </Table.Td>
                         </Table.Tr>
                       )
@@ -566,7 +644,6 @@ export default function ConsignmentPage() {
                       <Table.Th ta="right">ขายแล้ว</Table.Th>
                       <Table.Th ta="right">คืนแล้ว</Table.Th>
                       <Table.Th ta="right">คงเหลือ</Table.Th>
-                      <Table.Th ta="right">ราคาผู้ฝาก</Table.Th>
                       <Table.Th ta="right">ราคาขาย</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
@@ -582,7 +659,6 @@ export default function ConsignmentPage() {
                         <Table.Td ta="right"><Text size="sm" c="green">{fmtInt(s.quantity_sold)}</Text></Table.Td>
                         <Table.Td ta="right"><Text size="sm" c="orange">{fmtInt(s.quantity_returned)}</Text></Table.Td>
                         <Table.Td ta="right"><Text size="sm" fw={700}>{fmtInt(s.quantity_on_hand)}</Text></Table.Td>
-                        <Table.Td ta="right"><Text size="sm" c="dimmed">฿{fmt(parseFloat(s.consignor_price))}</Text></Table.Td>
                         <Table.Td ta="right"><Text size="sm" fw={600}>฿{fmt(parseFloat(s.selling_price))}</Text></Table.Td>
                       </Table.Tr>
                     ))}
@@ -643,10 +719,13 @@ export default function ConsignmentPage() {
                             {s.status !== 'paid' && parseFloat(s.net_payable) > 0 && (
                               confirmPayId === s.id ? (
                                 <Group gap={4}>
+                                  <Select size="xs" value={confirmPayMethod} onChange={v => setConfirmPayMethod(v || 'transfer')}
+                                    data={[{ value: 'cash', label: 'เงินสด' }, { value: 'transfer', label: 'โอน' }]}
+                                    style={{ width: 90 }} />
                                   <Button size="compact-xs" color="green"
                                     loading={payMutation.isPending}
-                                    onClick={() => payMutation.mutate(s.id)}>
-                                    ยืนยันจ่าย ฿{fmt(parseFloat(s.net_payable))}
+                                    onClick={() => payMutation.mutate({ id: s.id, method: confirmPayMethod })}>
+                                    ยืนยันจ่าย
                                   </Button>
                                   <Button size="compact-xs" color="gray" variant="light"
                                     onClick={() => setConfirmPayId(null)}>
@@ -656,7 +735,7 @@ export default function ConsignmentPage() {
                               ) : (
                                 <Button size="compact-xs" color="green" variant="light"
                                   leftSection={<IconCash size={14} />}
-                                  onClick={() => setConfirmPayId(s.id)}>
+                                  onClick={() => { setConfirmPayId(s.id); setConfirmPayMethod('transfer') }}>
                                   จ่ายเงิน
                                 </Button>
                               )
@@ -693,40 +772,206 @@ export default function ConsignmentPage() {
       )}
 
       {/* ══════ Modal: สร้างสัญญา ══════ */}
-      <Modal opened={addAgOpen} onClose={() => setAddAgOpen(false)} title="สร้างสัญญาฝากขาย" centered size="md">
-        <Stack gap="md">
-          <Select label="ผู้ฝากขาย" required searchable data={vendorOptions}
-            value={agForm.contactId} onChange={v => setAgForm({ ...agForm, contactId: v || '' })} />
-          <Group grow>
-            <DatePickerInput label="วันเริ่ม" required value={agForm.startDate} onChange={v => setAgForm({ ...agForm, startDate: v })} locale="th" valueFormat="DD MMMM YYYY" />
-            <DatePickerInput label="วันสิ้นสุด" value={agForm.endDate} onChange={v => setAgForm({ ...agForm, endDate: v })} locale="th" valueFormat="DD MMMM YYYY" clearable />
+      <Modal opened={addAgOpen} onClose={() => { setAddAgOpen(false); resetAgForm() }}
+        title={null} centered size={agStep === 1 ? 'md' : 'xl'} padding={0}
+        styles={{ header: { display: 'none' }, body: { padding: 0 } }}>
+
+        {/* ── Custom Header ── */}
+        <div style={{
+          background: 'linear-gradient(135deg, #4f46e5, #3730a3)', padding: '20px 24px',
+          borderRadius: '8px 8px 0 0',
+        }}>
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Text size="lg" fw={800} c="white">สร้างสัญญาฝากขาย</Text>
+              <Text size="xs" c="rgba(255,255,255,0.6)" mt={2}>
+                {agStep === 1 ? 'กรอกข้อมูลสัญญาและเงื่อนไขการฝากขาย' : 'เพิ่มรายการสินค้าที่ผู้ฝากขายนำมาฝาก'}
+              </Text>
+            </div>
+            <ActionIcon variant="subtle" color="white" size="sm" onClick={() => { setAddAgOpen(false); resetAgForm() }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>&times;</span>
+            </ActionIcon>
           </Group>
-          <Group grow>
-            <Select label="ประเภทค่าคอมฯ" data={[{ value: 'percent', label: '% จากยอดขาย' }, { value: 'fixed', label: 'บาท/ชิ้น' }]}
-              value={agForm.commissionType} onChange={v => setAgForm({ ...agForm, commissionType: v || 'percent' })} />
-            <NumberInput label={agForm.commissionType === 'percent' ? 'อัตรา (%)' : 'จำนวน (฿/ชิ้น)'}
-              min={0} value={agForm.commissionRate} onChange={v => setAgForm({ ...agForm, commissionRate: Number(v) || 0 })} />
+          {/* Step bar */}
+          <Group gap={0} mt={16}>
+            <div style={{
+              flex: 1, padding: '8px 12px', borderRadius: '6px 0 0 6px',
+              background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%', flexShrink: 0, fontSize: 12, fontWeight: 800,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: agStep === 1 ? '#fff' : 'rgba(255,255,255,0.3)',
+                color: agStep === 1 ? '#4f46e5' : 'rgba(255,255,255,0.8)',
+              }}>1</div>
+              <Text size="xs" fw={600} c={agStep === 1 ? 'white' : 'rgba(255,255,255,0.6)'}>ข้อมูลสัญญา</Text>
+            </div>
+            <div style={{
+              flex: 1, padding: '8px 12px', borderRadius: '0 6px 6px 0',
+              background: agStep === 2 ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%', flexShrink: 0, fontSize: 12, fontWeight: 800,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: agStep === 2 ? '#fff' : 'rgba(255,255,255,0.15)',
+                color: agStep === 2 ? '#4f46e5' : 'rgba(255,255,255,0.5)',
+              }}>2</div>
+              <Text size="xs" fw={600} c={agStep === 2 ? 'white' : 'rgba(255,255,255,0.5)'}>รับสินค้าเข้า</Text>
+            </div>
           </Group>
-          <NumberInput label="ระยะจ่ายเงิน (วัน)" min={0} value={agForm.paymentTerms} onChange={v => setAgForm({ ...agForm, paymentTerms: Number(v) || 30 })} />
-          <Textarea label="หมายเหตุ" value={agForm.note} onChange={e => setAgForm({ ...agForm, note: e.target.value })} />
-          <Group justify="flex-end">
-            <Button variant="subtle" onClick={() => setAddAgOpen(false)}>ยกเลิก</Button>
-            <Button loading={createAgMutation.isPending} disabled={!agForm.contactId || !agForm.startDate}
-              onClick={() => createAgMutation.mutate({
+        </div>
+
+        {/* ── Body ── */}
+        <div style={{ padding: '20px 24px' }}>
+          <Stack gap="md">
+            {agStep === 1 && (
+              <>
+                <Select label="ผู้ฝากขาย" required searchable data={vendorOptions}
+                  value={agForm.contactId} onChange={v => setAgForm({ ...agForm, contactId: v || '' })} />
+                <SimpleGrid cols={2}>
+                  <DatePickerInput label="วันเริ่ม" required value={agForm.startDate} onChange={v => setAgForm({ ...agForm, startDate: v })} locale="th" valueFormat="DD MMMM YYYY" />
+                  <DatePickerInput label="วันสิ้นสุด" value={agForm.endDate} onChange={v => setAgForm({ ...agForm, endDate: v })} locale="th" valueFormat="DD MMMM YYYY" clearable />
+                </SimpleGrid>
+                <SimpleGrid cols={2}>
+                  <Select label="ประเภทค่าคอมฯ" data={[{ value: 'percent', label: '% จากยอดขาย' }, { value: 'fixed', label: 'บาท/ชิ้น' }]}
+                    value={agForm.commissionType} onChange={v => setAgForm({ ...agForm, commissionType: v || 'percent' })} />
+                  <NumberInput label={agForm.commissionType === 'percent' ? 'อัตรา (%)' : 'จำนวน (฿/ชิ้น)'}
+                    min={0} value={agForm.commissionRate} onChange={v => setAgForm({ ...agForm, commissionRate: Number(v) || 0 })} />
+                </SimpleGrid>
+                <NumberInput label="ระยะจ่ายเงิน (วัน)" min={0} value={agForm.paymentTerms} onChange={v => setAgForm({ ...agForm, paymentTerms: Number(v) || 30 })} />
+                <Textarea label="หมายเหตุ" value={agForm.note} onChange={e => setAgForm({ ...agForm, note: e.target.value })} autosize minRows={2} />
+                <Divider />
+                <Group justify="flex-end">
+                  <Button variant="subtle" color="gray" onClick={() => { setAddAgOpen(false); resetAgForm() }}>ยกเลิก</Button>
+                  <Button disabled={!agForm.contactId || !agForm.startDate}
+                    rightSection={<span style={{ fontSize: 14 }}>→</span>}
+                    onClick={() => setAgStep(2)}
+                    style={{ background: 'linear-gradient(135deg, #4f46e5, #3730a3)' }}>
+                    ถัดไป
+                  </Button>
+                </Group>
+              </>
+            )}
+
+            {agStep === 2 && (() => {
+              const validItems = agItems.filter(i => i.productId)
+              const totalQty = validItems.reduce((s, i) => s + i.quantity, 0)
+              const totalCost = validItems.reduce((s, i) => s + i.quantity * i.sellingPrice, 0)
+              const totalRetail = validItems.reduce((s, i) => s + i.quantity * i.sellingPrice, 0)
+              const agPayload = {
                 contactId: parseInt(agForm.contactId), startDate: agForm.startDate ? toLocalDateStr(agForm.startDate) : undefined,
                 endDate: agForm.endDate ? toLocalDateStr(agForm.endDate) : null,
                 commissionType: agForm.commissionType, commissionRate: agForm.commissionRate,
                 paymentTerms: agForm.paymentTerms, note: agForm.note,
-              })}
-              style={{ background: 'linear-gradient(135deg, #4f46e5, #3730a3)' }}>
-              สร้างสัญญา
-            </Button>
-          </Group>
-        </Stack>
+              }
+              return (
+                <>
+                  {/* Summary of step 1 */}
+                  <Card padding="sm" radius="md" withBorder style={{ background: 'rgba(99,102,241,0.04)' }}>
+                    <Group justify="space-between">
+                      <Group gap="sm">
+                        <IconContract size={16} color="#6366f1" />
+                        <div>
+                          <Text size="sm" fw={600}>{vendors.find((v: any) => String(v.id) === agForm.contactId)?.name || '—'}</Text>
+                          <Text size="xs" c="dimmed">
+                            คอมฯ {agForm.commissionType === 'percent' ? `${agForm.commissionRate}%` : `฿${agForm.commissionRate}/ชิ้น`}
+                            {' · '}{agForm.paymentTerms} วัน
+                          </Text>
+                        </div>
+                      </Group>
+                      <Button size="compact-xs" variant="subtle" color="indigo" onClick={() => setAgStep(1)}>แก้ไข</Button>
+                    </Group>
+                  </Card>
+
+                  {/* Item table header */}
+                  <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderBottom: '2px solid var(--app-border)' }}>
+                    <Text size="xs" c="dimmed" fw={700} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>#</Text>
+                    <Text size="xs" c="dimmed" fw={700} style={{ flex: 2, minWidth: 160 }}>สินค้า</Text>
+                    <Text size="xs" c="dimmed" fw={700} style={{ width: 75, textAlign: 'center' }}>จำนวน</Text>
+                    <Text size="xs" c="dimmed" fw={700} style={{ width: 120, textAlign: 'center' }}>ราคาขาย</Text>
+                    <Text size="xs" c="dimmed" fw={700} style={{ width: 90, textAlign: 'right' }}>มูลค่า</Text>
+                    <div style={{ width: 32, flexShrink: 0 }}></div>
+                  </div>
+
+                  {/* Item rows */}
+                  {agItems.map((item, i) => {
+                    const lineTotal = item.quantity * item.sellingPrice
+                    return (
+                      <div key={i} style={{ display: 'flex', gap: 8, padding: '10px 0', alignItems: 'center', borderBottom: '1px solid var(--app-border)' }}>
+                        <Text size="sm" c="dimmed" fw={600} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>{i + 1}</Text>
+                        <div style={{ flex: 2, minWidth: 160 }}>
+                          <Select size="sm" searchable clearable placeholder="เลือกสินค้า"
+                            data={productOptions} value={item.productId}
+                            onChange={v => handleAgProductChange(i, v || '')} />
+                        </div>
+                        <NumberInput size="sm" min={1} value={item.quantity} style={{ width: 75 }}
+                          styles={{ input: { textAlign: 'center' } }} hideControls
+                          onChange={v => { const u = [...agItems]; u[i].quantity = Number(v) || 1; setAgItems(u) }} />
+                        <NumberInput size="sm" min={0} decimalScale={2} value={item.sellingPrice} style={{ width: 120 }}
+                          styles={{ input: { textAlign: 'right' } }} hideControls
+                          onChange={v => { const u = [...agItems]; u[i].sellingPrice = Number(v) || 0; setAgItems(u) }} />
+                        <Text size="sm" fw={600} c="indigo" style={{ width: 90, textAlign: 'right' }}>
+                          {item.productId ? `฿${fmt(lineTotal)}` : ''}
+                        </Text>
+                        <ActionIcon size="sm" variant="subtle" color="red" style={{ flexShrink: 0 }}
+                          disabled={agItems.length <= 1} onClick={() => setAgItems(agItems.filter((_, j) => j !== i))}>
+                          <IconTrash size={14} />
+                        </ActionIcon>
+                      </div>
+                    )
+                  })}
+
+                  <Button variant="light" size="xs" color="indigo" leftSection={<IconPlus size={14} />}
+                    onClick={() => setAgItems([...agItems, { productId: '', quantity: 1, sellingPrice: 0 }])}>
+                    เพิ่มรายการ
+                  </Button>
+
+                  {/* Summary */}
+                  {validItems.length > 0 && (
+                    <Card padding="sm" radius="md" withBorder style={{ background: 'rgba(5,150,105,0.04)', border: '1px solid rgba(5,150,105,0.15)' }}>
+                      <Group justify="space-between">
+                        <div>
+                          <Text size="xs" c="dimmed">จำนวนรวม</Text>
+                          <Text size="sm" fw={700}>{fmtInt(totalQty)} ชิ้น</Text>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <Text size="xs" c="dimmed">มูลค่ารวม (ราคาขาย)</Text>
+                          <Text size="lg" fw={800} c="green">฿{fmt(totalRetail)}</Text>
+                        </div>
+                      </Group>
+                    </Card>
+                  )}
+
+                  <Divider />
+                  <Group justify="space-between">
+                    <Button variant="subtle" color="gray" onClick={() => setAgStep(1)} leftSection={<IconArrowLeft size={14} />}>
+                      ย้อนกลับ
+                    </Button>
+                    <Group gap="sm">
+                      <Button variant="default"
+                        loading={createAgMutation.isPending}
+                        onClick={() => createAgMutation.mutate({ agreement: agPayload, items: [] })}>
+                        ข้ามขั้นตอนนี้
+                      </Button>
+                      <Button loading={createAgMutation.isPending}
+                        disabled={validItems.length === 0}
+                        leftSection={<IconPackageImport size={16} />}
+                        onClick={() => createAgMutation.mutate({ agreement: agPayload, items: agItems })}
+                        style={{ background: 'linear-gradient(135deg, #4f46e5, #3730a3)' }}>
+                        สร้างสัญญา + รับสินค้า
+                      </Button>
+                    </Group>
+                  </Group>
+                </>
+              )
+            })()}
+          </Stack>
+        </div>
       </Modal>
 
       {/* ══════ Modal: รับสินค้า ══════ */}
-      <Modal opened={receiveOpen} onClose={() => setReceiveOpen(false)} title="รับสินค้าฝากขาย" centered size="lg">
+      <Modal opened={receiveOpen} onClose={() => { setReceiveOpen(false); setRecAgId(''); setRecItems([{ productId: '', quantity: 1, sellingPrice: 0 }]) }} title="รับสินค้าฝากขาย" centered size="lg">
         <Stack gap="md">
           <Select label="สัญญาฝากขาย" required searchable data={agOptions}
             value={recAgId} onChange={v => setRecAgId(v || '')} />
@@ -736,8 +981,6 @@ export default function ConsignmentPage() {
                 onChange={v => handleRecProductChange(i, v || '')} />
               <NumberInput label="จำนวน" min={1} value={item.quantity}
                 onChange={v => { const u = [...recItems]; u[i].quantity = Number(v) || 1; setRecItems(u) }} />
-              <NumberInput label="ราคาผู้ฝาก" min={0} decimalScale={2} value={item.consignorPrice}
-                onChange={v => { const u = [...recItems]; u[i].consignorPrice = Number(v) || 0; setRecItems(u) }} />
               <NumberInput label="ราคาขาย" min={0} decimalScale={2} value={item.sellingPrice}
                 onChange={v => { const u = [...recItems]; u[i].sellingPrice = Number(v) || 0; setRecItems(u) }} />
               {recItems.length > 1 && (
@@ -748,7 +991,7 @@ export default function ConsignmentPage() {
             </Group>
           ))}
           <Button variant="light" size="xs" leftSection={<IconPlus size={14} />}
-            onClick={() => setRecItems([...recItems, { productId: '', quantity: 1, consignorPrice: 0, sellingPrice: 0 }])}>
+            onClick={() => setRecItems([...recItems, { productId: '', quantity: 1, sellingPrice: 0 }])}>
             เพิ่มรายการ
           </Button>
           <Group justify="flex-end">
@@ -773,20 +1016,38 @@ export default function ConsignmentPage() {
       </Modal>
 
       {/* ══════ Modal: คืนสินค้า ══════ */}
-      <Modal opened={returnOpen} onClose={() => setReturnOpen(false)} title="คืนสินค้าให้ผู้ฝากขาย" centered>
+      <Modal opened={returnOpen} onClose={() => { setReturnOpen(false); setRetAgId(''); setRetItems([{ productId: '', quantity: 1 }]) }} title="คืนสินค้าให้ผู้ฝากขาย" centered>
         <Stack gap="md">
           <Select label="สัญญาฝากขาย" required searchable data={agOptions}
-            value={retAgId} onChange={v => setRetAgId(v || '')} />
-          {retItems.map((item, i) => (
-            <Group key={i} grow align="end">
-              <Select label="สินค้า" searchable data={productOptions} value={item.productId}
-                onChange={v => { const u = [...retItems]; u[i].productId = v || ''; setRetItems(u) }} />
-              <NumberInput label="จำนวน" min={1} value={item.quantity}
-                onChange={v => { const u = [...retItems]; u[i].quantity = Number(v) || 1; setRetItems(u) }} />
-            </Group>
-          ))}
+            value={retAgId} onChange={v => { setRetAgId(v || ''); setRetItems([{ productId: '', quantity: 1 }]) }} />
+          {retItems.map((item, i) => {
+            const retStockItem = stock.find((s: any) => String(s.product_id) === item.productId && String(s.agreement_id) === retAgId)
+            const maxQty = retStockItem ? parseInt(retStockItem.quantity_on_hand) : 999
+            return (
+              <Group key={i} grow align="end">
+                <Select label="สินค้า" searchable
+                  data={stock.filter((s: any) => String(s.agreement_id) === retAgId && parseInt(s.quantity_on_hand) > 0).map((s: any) => ({
+                    value: String(s.product_id),
+                    label: `${s.product_name} (${s.sku}) — คงเหลือ ${s.quantity_on_hand}`,
+                  }))}
+                  value={item.productId}
+                  onChange={v => { const u = [...retItems]; u[i].productId = v || ''; setRetItems(u) }} />
+                <NumberInput label="จำนวน" min={1} max={maxQty} value={item.quantity}
+                  onChange={v => { const u = [...retItems]; u[i].quantity = Number(v) || 1; setRetItems(u) }} />
+                {retItems.length > 1 && (
+                  <ActionIcon color="red" variant="light" onClick={() => setRetItems(retItems.filter((_, j) => j !== i))}>
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                )}
+              </Group>
+            )
+          })}
+          <Button variant="light" size="xs" leftSection={<IconPlus size={14} />}
+            onClick={() => setRetItems([...retItems, { productId: '', quantity: 1 }])}>
+            เพิ่มรายการ
+          </Button>
           <Group justify="flex-end">
-            <Button variant="subtle" onClick={() => setReturnOpen(false)}>ยกเลิก</Button>
+            <Button variant="subtle" onClick={() => { setReturnOpen(false); setRetAgId(''); setRetItems([{ productId: '', quantity: 1 }]) }}>ยกเลิก</Button>
             <Tooltip label="พิมพ์ใบคืนสินค้า" disabled={!retAgId || retItems.every(i => !i.productId)}>
               <Button variant="light" leftSection={<IconPrinter size={16} />}
                 disabled={!retAgId || retItems.every(i => !i.productId)}
@@ -867,87 +1128,141 @@ export default function ConsignmentPage() {
       </Modal>
 
       {/* ══════ Modal: บันทึกยอดขาย ══════ */}
-      <Modal opened={saleOpen} onClose={() => setSaleOpen(false)} title="บันทึกยอดขายฝากขาย" centered size="lg">
-        <Stack gap="md">
-          <Alert variant="light" color="blue" icon={<IconReceipt size={18} />}>
-            <Text size="sm">บันทึกยอดขายที่ร้านค้ารายงานมา ระบบจะสร้างรายการขายและคำนวณค่าคอมมิชชั่นอัตโนมัติ</Text>
-          </Alert>
+      <Modal opened={saleOpen} onClose={() => { setSaleOpen(false); setSaleAgId(''); setSaleItems([{ productId: '', quantity: 1, sellingPrice: 0 }]); setSaleNote('') }}
+        title={null} centered size="xl" padding={0}
+        styles={{ header: { display: 'none' }, body: { padding: 0 } }}>
 
-          <Group grow>
+        {/* ── Custom Header ── */}
+        <div style={{ background: 'linear-gradient(135deg, #0ea5e9, #0369a1)', padding: '20px 24px', borderRadius: '8px 8px 0 0' }}>
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Group gap={8}>
+                <IconReceipt size={20} color="rgba(255,255,255,0.8)" />
+                <Text size="lg" fw={800} c="white">บันทึกยอดขายฝากขาย</Text>
+              </Group>
+              <Text size="xs" c="rgba(255,255,255,0.6)" mt={4}>บันทึกยอดขายที่ร้านค้ารายงานมา ระบบจะคำนวณค่าคอมมิชชั่นอัตโนมัติ</Text>
+            </div>
+            <ActionIcon variant="subtle" color="white" size="sm"
+              onClick={() => { setSaleOpen(false); setSaleAgId(''); setSaleItems([{ productId: '', quantity: 1, sellingPrice: 0 }]); setSaleNote('') }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>&times;</span>
+            </ActionIcon>
+          </Group>
+        </div>
+
+        {/* ── Body ── */}
+        <div style={{ padding: '20px 24px' }}>
+        <Stack gap="md">
+          <SimpleGrid cols={2}>
             <Select label="สัญญาฝากขาย" required searchable data={agOptions}
               value={saleAgId} onChange={v => { setSaleAgId(v || ''); setSaleItems([{ productId: '', quantity: 1, sellingPrice: 0 }]) }} />
             <DatePickerInput label="วันที่ขาย" value={saleDate} onChange={setSaleDate} locale="th" valueFormat="DD MMMM YYYY" />
-          </Group>
+          </SimpleGrid>
 
           {saleAgId && saleStockForAg.length === 0 && (
-            <Alert color="orange" variant="light">ไม่มีสินค้าคงเหลือในสัญญานี้</Alert>
+            <Alert color="orange" variant="light" icon={<IconAlertTriangle size={16} />}>ไม่มีสินค้าคงเหลือในสัญญานี้</Alert>
           )}
 
-          {saleAgId && saleStockForAg.length > 0 && (
-            <>
-              {saleItems.map((item, i) => {
-                const stockItem = stock.find((s: any) => String(s.product_id) === item.productId && String(s.agreement_id) === saleAgId)
-                const maxQty = stockItem ? parseInt(stockItem.quantity_on_hand) : 999
-                return (
-                  <Group key={i} grow align="end">
-                    <Select label="สินค้า" searchable data={saleProductOptions} value={item.productId}
-                      onChange={v => handleSaleProductChange(i, v || '')} />
-                    <NumberInput label="จำนวนที่ขาย" min={1} max={maxQty} value={item.quantity}
-                      onChange={v => { const u = [...saleItems]; u[i].quantity = Number(v) || 1; setSaleItems(u) }} />
-                    <NumberInput label="ราคาขาย/หน่วย" min={0} decimalScale={2} value={item.sellingPrice}
-                      onChange={v => { const u = [...saleItems]; u[i].sellingPrice = Number(v) || 0; setSaleItems(u) }} />
-                    {saleItems.length > 1 && (
-                      <ActionIcon color="red" variant="light" onClick={() => setSaleItems(saleItems.filter((_, j) => j !== i))}>
-                        <IconTrash size={16} />
+          {saleAgId && saleStockForAg.length > 0 && (() => {
+            const ag = agreements.find((a: any) => String(a.id) === saleAgId)
+            const validSaleItems = saleItems.filter(i => i.productId)
+            const totalSale = validSaleItems.reduce((s, i) => s + (i.sellingPrice * i.quantity), 0)
+            let totalComm = 0
+            for (const si of validSaleItems) {
+              if (ag?.commission_type === 'percent') {
+                totalComm += (si.sellingPrice * si.quantity) * (parseFloat(ag.commission_rate) / 100)
+              } else if (ag) {
+                totalComm += parseFloat(ag.commission_rate) * si.quantity
+              }
+            }
+            const commLabel = ag?.commission_type === 'percent' ? `${ag.commission_rate}%` : `฿${ag?.commission_rate}/ชิ้น`
+
+            return (
+              <>
+                {/* Table header */}
+                <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderBottom: '2px solid var(--app-border)' }}>
+                  <Text size="xs" c="dimmed" fw={700} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>#</Text>
+                  <Text size="xs" c="dimmed" fw={700} style={{ flex: 2, minWidth: 180 }}>สินค้า</Text>
+                  <Text size="xs" c="dimmed" fw={700} style={{ width: 80, textAlign: 'center' }}>คงเหลือ</Text>
+                  <Text size="xs" c="dimmed" fw={700} style={{ width: 80, textAlign: 'center' }}>จำนวน</Text>
+                  <Text size="xs" c="dimmed" fw={700} style={{ width: 120, textAlign: 'center' }}>ราคา/หน่วย</Text>
+                  <Text size="xs" c="dimmed" fw={700} style={{ width: 100, textAlign: 'right' }}>รวม</Text>
+                  <div style={{ width: 32, flexShrink: 0 }}></div>
+                </div>
+
+                {/* Item rows */}
+                {saleItems.map((item, i) => {
+                  const stockItem = stock.find((s: any) => String(s.product_id) === item.productId && String(s.agreement_id) === saleAgId)
+                  const maxQty = stockItem ? parseInt(stockItem.quantity_on_hand) : 999
+                  const lineTotal = item.quantity * item.sellingPrice
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 8, padding: '10px 0', alignItems: 'center', borderBottom: '1px solid var(--app-border)' }}>
+                      <Text size="sm" c="dimmed" fw={600} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>{i + 1}</Text>
+                      <div style={{ flex: 2, minWidth: 180 }}>
+                        <Select size="sm" searchable clearable placeholder="เลือกสินค้า"
+                          data={saleProductOptions} value={item.productId}
+                          onChange={v => handleSaleProductChange(i, v || '')} />
+                      </div>
+                      <Text size="sm" c="dimmed" ta="center" style={{ width: 80 }}>
+                        {stockItem ? fmtInt(parseInt(stockItem.quantity_on_hand)) : '—'}
+                      </Text>
+                      <NumberInput size="sm" min={1} max={maxQty} value={item.quantity} style={{ width: 80 }}
+                        styles={{ input: { textAlign: 'center' } }} hideControls
+                        onChange={v => { const u = [...saleItems]; u[i].quantity = Number(v) || 1; setSaleItems(u) }} />
+                      <NumberInput size="sm" min={0} decimalScale={2} value={item.sellingPrice} style={{ width: 120 }}
+                        styles={{ input: { textAlign: 'right' } }} hideControls
+                        onChange={v => { const u = [...saleItems]; u[i].sellingPrice = Number(v) || 0; setSaleItems(u) }} />
+                      <Text size="sm" fw={600} c="blue" style={{ width: 100, textAlign: 'right' }}>
+                        {item.productId ? `฿${fmt(lineTotal)}` : ''}
+                      </Text>
+                      <ActionIcon size="sm" variant="subtle" color="red" style={{ flexShrink: 0 }}
+                        disabled={saleItems.length <= 1} onClick={() => setSaleItems(saleItems.filter((_, j) => j !== i))}>
+                        <IconTrash size={14} />
                       </ActionIcon>
-                    )}
-                  </Group>
-                )
-              })}
-              <Button variant="light" size="xs" leftSection={<IconPlus size={14} />}
-                onClick={() => setSaleItems([...saleItems, { productId: '', quantity: 1, sellingPrice: 0 }])}>
-                เพิ่มรายการ
-              </Button>
+                    </div>
+                  )
+                })}
 
-              {/* Summary */}
-              {saleItems.some(i => i.productId) && (() => {
-                const ag = agreements.find((a: any) => String(a.id) === saleAgId)
-                const totalSale = saleItems.filter(i => i.productId).reduce((s, i) => s + (i.sellingPrice * i.quantity), 0)
-                let totalComm = 0
-                for (const si of saleItems.filter(i => i.productId)) {
-                  if (ag?.commission_type === 'percent') {
-                    totalComm += (si.sellingPrice * si.quantity) * (parseFloat(ag.commission_rate) / 100)
-                  } else if (ag) {
-                    totalComm += parseFloat(ag.commission_rate) * si.quantity
-                  }
-                }
-                return (
-                  <Card padding="sm" radius="md" withBorder bg="gray.0">
-                    <Group justify="space-between">
-                      <Text size="sm">ยอดขายรวม</Text>
-                      <Text size="sm" fw={700}>฿{fmt(totalSale)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="violet">ค่าคอมมิชชั่น ({ag?.commission_type === 'percent' ? `${ag.commission_rate}%` : `฿${ag?.commission_rate}/ชิ้น`})</Text>
-                      <Text size="sm" fw={700} c="violet">฿{fmt(totalComm)}</Text>
-                    </Group>
-                    <Divider my={4} />
-                    <Group justify="space-between">
-                      <Text size="sm" fw={700}>ยอดจ่ายผู้ฝากขาย (สุทธิ)</Text>
-                      <Text size="lg" fw={800} c="blue">฿{fmt(totalSale - totalComm)}</Text>
-                    </Group>
+                <Button variant="light" size="xs" color="blue" leftSection={<IconPlus size={14} />}
+                  onClick={() => setSaleItems([...saleItems, { productId: '', quantity: 1, sellingPrice: 0 }])}>
+                  เพิ่มรายการ
+                </Button>
+
+                {/* Summary */}
+                {validSaleItems.length > 0 && (
+                  <Card padding="md" radius="md" withBorder
+                    style={{ background: 'linear-gradient(135deg, rgba(14,165,233,0.04), rgba(99,102,241,0.04))', border: '1px solid rgba(14,165,233,0.2)' }}>
+                    <Stack gap={6}>
+                      <Group justify="space-between">
+                        <Text size="sm" c="dimmed">ยอดขายรวม ({validSaleItems.length} รายการ)</Text>
+                        <Text size="sm" fw={700}>฿{fmt(totalSale)}</Text>
+                      </Group>
+                      <Group justify="space-between">
+                        <Text size="sm" c="violet">ค่าคอมมิชชั่น ({commLabel})</Text>
+                        <Text size="sm" fw={700} c="violet">- ฿{fmt(totalComm)}</Text>
+                      </Group>
+                      <Divider variant="dashed" />
+                      <Group justify="space-between">
+                        <Text size="sm" fw={700}>ยอดจ่ายผู้ฝากขาย (สุทธิ)</Text>
+                        <Text size="xl" fw={800} c="blue">฿{fmt(totalSale - totalComm)}</Text>
+                      </Group>
+                    </Stack>
                   </Card>
-                )
-              })()}
-            </>
-          )}
+                )}
+              </>
+            )
+          })()}
 
-          <Textarea label="หมายเหตุ" placeholder="รายละเอียดเพิ่มเติม..." value={saleNote} onChange={e => setSaleNote(e.target.value)} />
+          <Textarea placeholder="หมายเหตุ (ถ้ามี)" value={saleNote} onChange={e => setSaleNote(e.target.value)} autosize minRows={2} />
 
+          <Divider />
           <Group justify="flex-end">
-            <Button variant="subtle" onClick={() => setSaleOpen(false)}>ยกเลิก</Button>
+            <Button variant="subtle" color="gray"
+              onClick={() => { setSaleOpen(false); setSaleAgId(''); setSaleItems([{ productId: '', quantity: 1, sellingPrice: 0 }]); setSaleNote('') }}>
+              ยกเลิก
+            </Button>
             <Button loading={saleMutation.isPending}
               disabled={!saleAgId || saleItems.every(i => !i.productId)}
+              leftSection={<IconReceipt size={16} />}
               onClick={() => saleMutation.mutate({
                 agreementId: parseInt(saleAgId),
                 saleDate: saleDate ? toLocalDateStr(saleDate) : toLocalDateStr(new Date()),
@@ -956,11 +1271,12 @@ export default function ConsignmentPage() {
                   productId: parseInt(i.productId), quantity: i.quantity, sellingPrice: i.sellingPrice,
                 })),
               })}
-              style={{ background: 'linear-gradient(135deg, #4f46e5, #3730a3)' }}>
+              style={{ background: 'linear-gradient(135deg, #0ea5e9, #0369a1)' }}>
               บันทึกยอดขาย
             </Button>
           </Group>
         </Stack>
+        </div>
       </Modal>
 
       {/* ══════ Modal: สร้างใบสรุป ══════ */}

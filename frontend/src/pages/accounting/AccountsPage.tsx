@@ -102,7 +102,7 @@ export default function AccountsPage() {
                     <Table.Th w={120}>รหัส</Table.Th>
                     <Table.Th>ชื่อบัญชี</Table.Th>
                     <Table.Th w={150}>บัญชีแม่</Table.Th>
-                    <Table.Th w={80} ta="center">สถานะ</Table.Th>
+                    <Table.Th w={110} ta="center">สถานะ</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>

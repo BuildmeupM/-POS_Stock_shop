@@ -248,5 +248,67 @@ router.post('/:id/renew', roleCheck('owner', 'admin', 'manager'), async (req, re
   }
 })
 
+// GET /api/consignment/agreements/:id/transactions
+router.get('/:id/transactions', async (req, res) => {
+  try {
+    const rows = await executeQuery(`
+      SELECT ct.*, p.name as product_name, p.sku,
+        s.invoice_number as sale_number
+      FROM consignment_transactions ct
+      JOIN products p ON ct.product_id = p.id
+      JOIN consignment_agreements ca ON ct.agreement_id = ca.id
+      LEFT JOIN sales s ON ct.sale_id = s.id
+      WHERE ct.agreement_id = ? AND ca.company_id = ?
+      ORDER BY ct.created_at DESC
+    `, [req.params.id, req.user.companyId])
+    res.json(rows)
+  } catch (error) {
+    console.error('Get consignment transactions error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// DELETE /api/consignment/agreements/:id
+router.delete('/:id', roleCheck('owner', 'admin'), async (req, res) => {
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    const companyId = req.user.companyId
+
+    const [agreements] = await connection.execute(
+      'SELECT * FROM consignment_agreements WHERE id = ? AND company_id = ?',
+      [req.params.id, companyId]
+    )
+    if (agreements.length === 0) {
+      await connection.rollback(); connection.release()
+      return res.status(404).json({ message: 'ไม่พบสัญญา' })
+    }
+
+    // Delete related sale_items that reference consignment_stock of this agreement
+    await connection.execute(
+      `UPDATE sale_items SET is_consignment = FALSE, consignment_stock_id = NULL
+       WHERE consignment_stock_id IN (SELECT id FROM consignment_stock WHERE agreement_id = ?)`,
+      [req.params.id]
+    )
+
+    // Delete settlements
+    await connection.execute('DELETE FROM consignment_settlements WHERE agreement_id = ?', [req.params.id])
+
+    // Delete transactions, stock, then agreement
+    await connection.execute('DELETE FROM consignment_transactions WHERE agreement_id = ?', [req.params.id])
+    await connection.execute('DELETE FROM consignment_stock WHERE agreement_id = ?', [req.params.id])
+    await connection.execute('DELETE FROM consignment_agreements WHERE id = ?', [req.params.id])
+
+    await connection.commit()
+    res.json({ message: 'ลบสัญญาฝากขายสำเร็จ' })
+  } catch (error) {
+    await connection.rollback()
+    console.error('Delete agreement error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  } finally {
+    connection.release()
+  }
+})
+
 module.exports = router
 

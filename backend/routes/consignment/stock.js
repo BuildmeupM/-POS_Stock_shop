@@ -347,12 +347,13 @@ router.post('/record-sale', roleCheck('owner', 'admin', 'manager'), async (req, 
     )
 
     // Journal entry
-    //   Dr. ลูกหนี้ฝากขาย (1130) = totalAmount (ยอดขายที่ร้านรับฝากต้องจ่าย)
-    //   Cr. เจ้าหนี้ผู้ฝากขาย (2150) = totalConsignorCost (ส่วนของผู้ฝากขาย)
+    //   Dr. ลูกหนี้ฝากขาย (1130) = totalAmount (ยอดขายทั้งหมด)
+    //   Cr. เจ้าหนี้ผู้ฝากขาย (2150) = totalAmount - totalCommission (ยอดจ่ายสุทธิให้ผู้ฝาก)
     //   Cr. รายได้ค่าคอมมิชชัน (4200) = totalCommission (ส่วนค่าคอมฯ ของร้าน)
+    const netPayable = totalAmount - totalCommission
     const journalLines = [
       { accountCode: '1130', debit: totalAmount, credit: 0, description: `ลูกหนี้ฝากขาย ${invoiceNumber}` },
-      { accountCode: '2150', debit: 0, credit: totalConsignorCost, description: `เจ้าหนี้ผู้ฝากขาย ${invoiceNumber}` },
+      { accountCode: '2150', debit: 0, credit: netPayable, description: `เจ้าหนี้ผู้ฝากขาย ${invoiceNumber}` },
     ]
     if (totalCommission > 0) {
       journalLines.push({ accountCode: '4200', debit: 0, credit: totalCommission, description: `ค่าคอมมิชชัน ${invoiceNumber}` })

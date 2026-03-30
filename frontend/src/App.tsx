@@ -37,6 +37,7 @@ import StockPage from './pages/stock/StockPage'
 import WarehousePage from './pages/stock/WarehousePage'
 import StocktakingPage from './pages/stock/StocktakingPage'
 import ConsignmentPage from './pages/consignment/ConsignmentPage'
+import ConsignmentDetailPage from './pages/consignment/ConsignmentDetailPage'
 
 // Finance
 import ExpensePage from './pages/finance/ExpensePage'
@@ -97,6 +98,7 @@ export default function App() {
         <Route path="sales-doc/create" element={<SalesDocCreatePage />} />
         <Route path="sales-doc/:id" element={<SalesDocDetailPage />} />
         <Route path="consignment" element={<ConsignmentPage />} />
+        <Route path="consignment/:id" element={<ConsignmentDetailPage />} />
         <Route path="stocktaking" element={<StocktakingPage />} />
         <Route path="reports/sales" element={<SalesReportsPage />} />
         <Route path="reports/inventory" element={<InventoryReportPage />} />
@@ -109,6 +111,7 @@ export default function App() {
         <Route path="reconciliation" element={<BankReconciliationPage />} />
         <Route path="wht" element={<WhtPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="online-orders" element={<Navigate to="/orders" replace />} />
       </Route>
     </Routes>
   )
