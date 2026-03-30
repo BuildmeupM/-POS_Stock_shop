@@ -55,11 +55,27 @@ export default function SalesDocCreatePage() {
     queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
   })
 
+  // Determine which source doc type this doc can reference
+  const REF_DOC_MAP: Record<string, { sourceType: string; sourceLabel: string; sourceStatuses: string[] }> = {
+    invoice:  { sourceType: 'quotation', sourceLabel: 'ใบเสนอราคา', sourceStatuses: ['approved'] },
+    delivery: { sourceType: 'invoice',   sourceLabel: 'ใบแจ้งหนี้ / บิลขาย', sourceStatuses: ['approved'] },
+    receipt:  { sourceType: 'invoice',   sourceLabel: 'ใบแจ้งหนี้ / บิลขาย', sourceStatuses: ['approved'] },
+  }
+  const refDocConfig = REF_DOC_MAP[docType] || null
+  const canLinkDoc = !!refDocConfig
+
+  const { data: refDocOptions = [] } = useQuery({
+    queryKey: ['ref-doc-options', refDocConfig?.sourceType],
+    queryFn: () => api.get('/sales-doc', { params: { docType: refDocConfig!.sourceType, status: refDocConfig!.sourceStatuses[0] } }).then(r => r.data),
+    enabled: canLinkDoc,
+  })
+
   const settings = company?.settings || {}
   const vatEnabled = settings.vat_enabled !== false
   const vatRate = vatEnabled ? (settings.vat_rate || 7) : 0
 
   // Form state
+  const [refDocId, setRefDocId] = useState<string | null>(null)
   const [customerId, setCustomerId] = useState<string | null>(null)
   const [customerName, setCustomerName] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
@@ -88,6 +104,16 @@ export default function SalesDocCreatePage() {
   const [items, setItems] = useState([
     { productId: '', description: '', quantity: 1, unit: 'ชิ้น', unitPrice: 0, discountPerUnit: 0, discountType: 'baht' as const, vatType: (vatEnabled ? 'vat7' : 'no_vat') as 'vat7' | 'vat0' | 'no_vat' },
   ])
+
+  // === Prefill from refDocId query param (from detail page "สร้างเอกสารต่อ" button) ===
+  const refDocIdParam = searchParams.get('refDocId')
+  const [refDocPrefilled, setRefDocPrefilled] = useState(false)
+  useEffect(() => {
+    if (refDocIdParam && !refDocPrefilled && canLinkDoc) {
+      setRefDocPrefilled(true)
+      handleRefDocSelect(refDocIdParam)
+    }
+  }, [refDocIdParam, refDocPrefilled, canLinkDoc])
 
   // === Prefill from saleId ===
   const saleId = searchParams.get('saleId')
@@ -125,6 +151,40 @@ export default function SalesDocCreatePage() {
       }
     }
   }, [saleData, prefilled])
+
+  // === Select source document to link ===
+  const handleRefDocSelect = async (refId: string | null) => {
+    setRefDocId(refId)
+    if (!refId) return
+    try {
+      const res = await api.get(`/sales-doc/${refId}`)
+      const doc = res.data
+      if (doc.customer_id) setCustomerId(String(doc.customer_id))
+      if (doc.customer_name) setCustomerName(doc.customer_name)
+      if (doc.customer_address) setCustomerAddress(doc.customer_address || '')
+      if (doc.customer_tax_id) setCustomerTaxId(doc.customer_tax_id || '')
+      if (doc.customer_phone) setCustomerPhone(doc.customer_phone || '')
+      if (doc.price_type) setPriceType(doc.price_type)
+      if (doc.discount_amount) setDiscountAmount(parseFloat(doc.discount_amount) || 0)
+      if (doc.note) setNote(doc.note)
+      setReference(`อ้างอิง ${doc.doc_number}`)
+      if (doc.items?.length > 0) {
+        setItems(doc.items.map((item: any) => ({
+          productId: item.product_id ? String(item.product_id) : '',
+          description: item.description || '',
+          quantity: parseInt(item.quantity) || 1,
+          unit: item.unit || 'ชิ้น',
+          unitPrice: parseFloat(item.unit_price) || 0,
+          discountPerUnit: parseFloat(item.discount_per_unit) || 0,
+          discountType: (item.discount_type || 'baht') as 'baht' | 'percent',
+          vatType: (item.vat_type || 'vat7') as 'vat7' | 'vat0' | 'no_vat',
+        })))
+      }
+      notifications.show({ title: 'โหลดข้อมูล', message: `ดึงข้อมูลจาก ${doc.doc_number} สำเร็จ`, color: 'blue' })
+    } catch {
+      notifications.show({ title: 'ผิดพลาด', message: `ไม่สามารถดึงข้อมูล${refDocConfig?.sourceLabel || 'เอกสาร'}ได้`, color: 'red' })
+    }
+  }
 
   const handleCustomerSelect = (id: string | null) => {
     setCustomerId(id)
@@ -235,7 +295,7 @@ export default function SalesDocCreatePage() {
   const doCreate = (status: 'draft' | 'approved', payNow: boolean) => {
     const channel = paymentChannels.find((c: any) => String(c.id) === payChannelId)
     createMutation.mutate({
-      docType, reference, saleId: saleId ? parseInt(saleId) : null,
+      docType, reference, refDocId: refDocId ? parseInt(refDocId) : null, saleId: saleId ? parseInt(saleId) : null,
       customerId: customerId && !customerId.startsWith('ct_') ? parseInt(customerId) : null,
       customerName, customerAddress, customerTaxId, customerPhone,
       docDate: docDate?.toISOString().split('T')[0], dueDate: dueDate?.toISOString().split('T')[0] || null,
@@ -303,6 +363,52 @@ export default function SalesDocCreatePage() {
         </Group>
       </Card>
 
+      {/* ═══ อ้างอิงเอกสารต้นทาง ═══ */}
+      {canLinkDoc && refDocConfig && (
+        <Card shadow="xs" padding={0} radius="md" withBorder style={{ overflow: 'hidden' }}>
+          <div style={{
+            padding: '12px 20px',
+            background: 'linear-gradient(135deg, rgba(59,130,246,0.08), rgba(99,102,241,0.04))',
+            borderBottom: '1px solid var(--app-border)',
+          }}>
+            <Group gap={10}>
+              <ThemeIcon size={28} variant="gradient" gradient={{ from: 'blue', to: 'indigo' }} radius="md">
+                <IconFileText size={15} />
+              </ThemeIcon>
+              <div>
+                <Text fw={700} size="sm">อ้างอิงจาก{refDocConfig.sourceLabel}</Text>
+                <Text size="xs" c="dimmed">เลือก{refDocConfig.sourceLabel}เพื่อดึงข้อมูลลูกค้าและรายการสินค้ามาใช้</Text>
+              </div>
+            </Group>
+          </div>
+          <div style={{ padding: '16px 20px' }}>
+            <Select size="sm" searchable clearable placeholder={`เลือก${refDocConfig.sourceLabel}ที่อนุมัติแล้ว...`}
+              value={refDocId} onChange={handleRefDocSelect}
+              data={(Array.isArray(refDocOptions) ? refDocOptions : refDocOptions.data || []).map((q: any) => ({
+                value: String(q.id),
+                label: `${q.doc_number} — ${q.customer_name || 'ไม่ระบุลูกค้า'} (฿${fmt(parseFloat(q.total_amount) || 0)})`,
+              }))}
+              nothingFoundMessage={`ไม่มี${refDocConfig.sourceLabel}ที่อนุมัติแล้ว`} />
+            {refDocId && (() => {
+              const src = (Array.isArray(refDocOptions) ? refDocOptions : refDocOptions.data || []).find((q: any) => String(q.id) === refDocId)
+              return src ? (
+                <div style={{
+                  marginTop: 12, padding: '10px 14px', borderRadius: 8,
+                  background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.15)',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <div>
+                    <Text size="sm" fw={600} c="blue">{src.doc_number}</Text>
+                    <Text size="xs" c="dimmed">{src.customer_name} {src.doc_date ? `· ${new Date(src.doc_date).toLocaleDateString('th-TH')}` : ''}</Text>
+                  </div>
+                  <Badge size="lg" variant="light" color="blue">฿{fmt(parseFloat(src.total_amount) || 0)}</Badge>
+                </div>
+              ) : null
+            })()}
+          </div>
+        </Card>
+      )}
+
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
         {/* ═══ Left: ข้อมูลเอกสาร ═══ */}
         <Card shadow="xs" padding="lg" radius="md" withBorder>
@@ -346,8 +452,10 @@ export default function SalesDocCreatePage() {
               placeholder="พิมพ์ชื่อ, เบอร์โทร, เลขภาษี..."
               nothingFoundMessage={customerSearch ? 'ไม่พบลูกค้า' : 'พิมพ์เพื่อค้นหา'}
               description={!customerSearch ? 'แสดง 5 รายการล่าสุด' : undefined} />
-            <TextInput label="ชื่อลูกค้า" size="sm" placeholder="ชื่อบริษัท/บุคคล"
-              value={customerName} onChange={e => setCustomerName(e.target.value)} />
+            {!customerId && (
+              <TextInput label="ชื่อลูกค้า" size="sm" placeholder="ชื่อบริษัท/บุคคล"
+                value={customerName} onChange={e => setCustomerName(e.target.value)} />
+            )}
             <SimpleGrid cols={2}>
               <TextInput label="เบอร์โทร" size="sm" placeholder="08x-xxx-xxxx"
                 value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} />
@@ -361,53 +469,83 @@ export default function SalesDocCreatePage() {
       </SimpleGrid>
 
       {/* ═══ Items Table ═══ */}
-      <Card shadow="xs" padding="lg" radius="md" withBorder>
-        <Group justify="space-between" mb="md">
-          <Group gap={8}>
-            <ThemeIcon size="sm" variant="light" color="violet" radius="xl"><IconPackage size={14} /></ThemeIcon>
-            <Text fw={700} size="sm">รายการสินค้า / บริการ</Text>
-            {itemCount > 0 && <Badge variant="light" color="violet" size="sm">{itemCount} รายการ</Badge>}
-            {warningCount > 0 && (
-              <Badge variant="filled" color="orange" size="sm" leftSection={<IconAlertTriangle size={11} />}>
-                {warningCount} รายการต่ำกว่าขั้นต่ำ
-              </Badge>
-            )}
+      <Card shadow="xs" padding={0} radius="md" withBorder style={{ overflow: 'hidden' }}>
+        {/* Table Header */}
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(139,92,246,0.08), rgba(99,102,241,0.05))',
+          padding: '14px 20px',
+          borderBottom: '1px solid var(--app-border)',
+        }}>
+          <Group justify="space-between">
+            <Group gap={10}>
+              <ThemeIcon size={32} variant="gradient" gradient={{ from: 'violet', to: 'indigo' }} radius="md">
+                <IconPackage size={17} />
+              </ThemeIcon>
+              <div>
+                <Text fw={700} size="sm">รายการสินค้า / บริการ</Text>
+                <Text size="xs" c="dimmed">{itemCount > 0 ? `${itemCount} รายการ` : 'ยังไม่มีรายการ'}</Text>
+              </div>
+              {warningCount > 0 && (
+                <Badge variant="filled" color="orange" size="sm" leftSection={<IconAlertTriangle size={11} />}>
+                  {warningCount} รายการต่ำกว่าขั้นต่ำ
+                </Badge>
+              )}
+            </Group>
+            <Button variant="light" size="xs" color="violet" leftSection={<IconPlus size={14} />} onClick={addItem}
+              style={{ fontWeight: 600 }}>
+              เพิ่มรายการ
+            </Button>
           </Group>
-          <Button variant="light" size="xs" color="violet" leftSection={<IconPlus size={14} />} onClick={addItem}>
-            เพิ่มรายการ
-          </Button>
-        </Group>
+        </div>
 
         {/* Column headers */}
-        <div style={{ display: 'flex', gap: 10, padding: '10px 0', borderBottom: '2px solid var(--app-border)' }}>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 28, textAlign: 'center', flexShrink: 0 }}>#</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ flex: 2, minWidth: 180 }}>สินค้า/บริการ</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 85, textAlign: 'center' }}>จำนวน</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 120, textAlign: 'center' }}>ราคา/หน่วย</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 160, textAlign: 'center' }}>ส่วนลด/หน่วย</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 90, textAlign: 'center' }}>ภาษี</Text>
-          <Text size="xs" c="dimmed" fw={700} style={{ width: 100, textAlign: 'right', flexShrink: 0 }}>มูลค่า</Text>
+        <div style={{
+          display: 'flex', gap: 10, padding: '10px 20px',
+          background: 'rgba(99,102,241,0.03)',
+          borderBottom: '2px solid rgba(99,102,241,0.12)',
+        }}>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 32, textAlign: 'center', flexShrink: 0 }}>#</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ flex: 2, minWidth: 180 }}>สินค้า/บริการ</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 85, textAlign: 'center' }}>จำนวน</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 120, textAlign: 'center' }}>ราคา/หน่วย</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 160, textAlign: 'center' }}>ส่วนลด/หน่วย</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 90, textAlign: 'center' }}>ภาษี</Text>
+          <Text size="xs" c="dimmed" fw={700} tt="uppercase" style={{ width: 100, textAlign: 'right', flexShrink: 0 }}>มูลค่า</Text>
           <div style={{ width: 30, flexShrink: 0 }}></div>
         </div>
 
         {/* Item rows */}
-        <Stack gap={0}>
+        <div style={{ padding: '0 12px' }}>
           {items.map((item, i) => (
-            <div key={i} style={{ borderBottom: '1px solid var(--app-border)' }}>
+            <div key={i} style={{
+              margin: '8px 0',
+              padding: '12px',
+              borderRadius: 10,
+              border: '1px solid var(--app-border)',
+              background: item.productId ? 'rgba(99,102,241,0.02)' : 'var(--app-surface)',
+              transition: 'all 0.15s ease',
+            }}>
               {/* Row 1: product select + numbers */}
-              <div style={{ display: 'flex', gap: 10, padding: '12px 0 6px', alignItems: 'flex-start' }}>
-                <Text size="sm" c="dimmed" fw={600} style={{ width: 28, paddingTop: 8, textAlign: 'center', flexShrink: 0 }}>{i + 1}</Text>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <div style={{
+                  width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                  background: item.productId ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'rgba(99,102,241,0.1)',
+                  color: item.productId ? '#fff' : '#a5b4fc',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, fontWeight: 800, marginTop: 2,
+                  transition: 'all 0.2s',
+                }}>{i + 1}</div>
                 <div style={{ flex: 2, minWidth: 180 }}>
                   <Select size="sm" searchable clearable placeholder="เลือกสินค้า/บริการ"
                     data={productOptions} value={item.productId}
                     onChange={v => handleProductSelect(i, v || '')} />
                 </div>
                 <NumberInput size="sm" min={1} value={item.quantity} style={{ width: 85 }}
-                  styles={{ input: { textAlign: 'center' } }}
+                  styles={{ input: { textAlign: 'center', fontWeight: 600 } }}
                   onChange={v => updateItem(i, 'quantity', Number(v) || 1)} />
                 <NumberInput size="sm" min={0} value={item.unitPrice} decimalScale={2} fixedDecimalScale
                   thousandSeparator="," style={{ width: 120 }}
-                  styles={{ input: { textAlign: 'right' } }}
+                  styles={{ input: { textAlign: 'right', fontWeight: 600 } }}
                   onChange={v => updateItem(i, 'unitPrice', Number(v) || 0)} />
                 <div style={{ width: 160, display: 'flex', gap: 4, alignItems: 'center' }}>
                   <SegmentedControl size="xs" value={item.discountType}
@@ -429,45 +567,69 @@ export default function SalesDocCreatePage() {
                     { value: 'vat7', label: `${vatRate}%` },
                   ]}
                   onChange={v => updateItem(i, 'vatType', v || 'no_vat')} />
-                <Text size="sm" fw={700} c={config.color} style={{ width: 100, textAlign: 'right', paddingTop: 8, flexShrink: 0 }}>
-                  {fmt(calc.rows[i]?.lineTotal || 0)}
-                </Text>
-                <ActionIcon size="sm" variant="subtle" color="red" style={{ flexShrink: 0, marginTop: 6 }}
+                <div style={{
+                  width: 100, flexShrink: 0, paddingTop: 4, textAlign: 'right',
+                }}>
+                  <Text size="sm" fw={800} c={config.color} style={{ lineHeight: 1 }}>
+                    ฿{fmt(calc.rows[i]?.lineTotal || 0)}
+                  </Text>
+                  {item.discountPerUnit > 0 && (
+                    <Text size="xs" c="red" mt={2} style={{ lineHeight: 1 }}>
+                      -{item.discountType === 'percent' ? `${item.discountPerUnit}%` : `฿${fmt(item.discountPerUnit)}`}
+                    </Text>
+                  )}
+                </div>
+                <ActionIcon size="sm" variant="subtle" color="red" radius="md"
+                  style={{ flexShrink: 0, marginTop: 4 }}
                   disabled={items.length <= 1} onClick={() => removeItem(i)}>
                   <IconTrash size={15} />
                 </ActionIcon>
               </div>
               {/* Row 2: description + min price warning */}
-              <div style={{ paddingLeft: 38, paddingBottom: 12 }}>
+              <div style={{ paddingLeft: 42, paddingTop: 8 }}>
                 <TextInput size="sm" variant="unstyled" placeholder="พิมพ์คำอธิบายรายการ ไม่เกิน 1,000 ตัวอักษร"
                   value={item.description} onChange={e => updateItem(i, 'description', e.target.value)}
-                  style={{ background: 'rgba(99,102,241,0.04)', borderRadius: 6, padding: '6px 12px' }} />
+                  styles={{
+                    input: {
+                      background: 'rgba(99,102,241,0.04)',
+                      borderRadius: 8,
+                      padding: '8px 14px',
+                      fontSize: 13,
+                      border: '1px dashed rgba(99,102,241,0.12)',
+                      transition: 'border-color 0.2s',
+                    },
+                  }} />
                 {minPriceWarnings[i] && (
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: 7,
-                    marginTop: 6, padding: '6px 10px',
+                    marginTop: 8, padding: '8px 12px',
                     background: 'rgba(249,115,22,0.08)',
                     border: '1px solid rgba(249,115,22,0.25)',
                     borderRadius: 8, fontSize: 12, color: '#ea580c', fontWeight: 600,
                   }}>
                     <IconAlertTriangle size={14} stroke={2} />
-                    ⚠️ ราคาขั้นต่ำสุด: ฿{fmt(minPriceWarnings[i]!.minPrice)}
+                    ราคาขั้นต่ำสุด: ฿{fmt(minPriceWarnings[i]!.minPrice)}
                     <span style={{ fontWeight: 400, color: '#9a3412' }}>
-                      &nbsp;— ราคาที่เลือก ฿{fmt(minPriceWarnings[i]!.effectivePrice)} ต่ำกว่าขั้นต่ำ — ไม่สามารถบันทึกได้
+                      &nbsp;— ราคาที่เลือก ฿{fmt(minPriceWarnings[i]!.effectivePrice)} ต่ำกว่าขั้นต่ำ
                     </span>
                   </div>
                 )}
               </div>
             </div>
           ))}
-        </Stack>
+        </div>
 
-        {/* Add buttons */}
-        <Group gap="sm" mt="md">
-          <Button variant="light" size="xs" color="violet" leftSection={<IconPlus size={14} />} onClick={addItem}>
+        {/* Add button footer */}
+        <div style={{
+          padding: '12px 20px 16px',
+          borderTop: '1px dashed var(--app-border)',
+          background: 'rgba(139,92,246,0.02)',
+        }}>
+          <Button variant="subtle" size="sm" color="violet" leftSection={<IconPlus size={15} />} onClick={addItem}
+            style={{ fontWeight: 600 }}>
             เพิ่มรายการใหม่
           </Button>
-        </Group>
+        </div>
       </Card>
 
       {/* ═══ Note + Summary ═══ */}
@@ -481,69 +643,94 @@ export default function SalesDocCreatePage() {
             value={note} onChange={e => setNote(e.target.value)} />
         </Card>
 
-        <Card shadow="xs" padding="lg" radius="md" withBorder>
-          <Group gap={8} mb="md">
-            <ThemeIcon size="sm" variant="light" color="green" radius="xl"><IconCurrencyBaht size={14} /></ThemeIcon>
-            <Text fw={700} size="sm">สรุปยอด</Text>
-          </Group>
-          <Stack gap={6}>
-            <Group justify="space-between">
-              <Text size="sm" c="dimmed">รวมสินค้า ({itemCount} รายการ)</Text>
-              <Text size="sm" fw={600}>฿{fmt(calc.subtotal)}</Text>
+        <Card shadow="xs" padding={0} radius="md" withBorder style={{ overflow: 'hidden' }}>
+          {/* Summary header */}
+          <div style={{
+            padding: '12px 20px',
+            background: 'linear-gradient(135deg, rgba(5,150,105,0.08), rgba(16,185,129,0.04))',
+            borderBottom: '1px solid var(--app-border)',
+          }}>
+            <Group gap={8}>
+              <ThemeIcon size={28} variant="gradient" gradient={{ from: 'green', to: 'teal' }} radius="md">
+                <IconCurrencyBaht size={15} />
+              </ThemeIcon>
+              <Text fw={700} size="sm">สรุปยอด</Text>
             </Group>
-            <Group justify="space-between" align="center">
-              <Text size="sm" c="dimmed">ส่วนลดรวม</Text>
-              <Group gap={4}>
-                <SegmentedControl size="xs" value={discountType}
-                  onChange={v => { setDiscountType(v as 'baht' | 'percent'); setDiscountAmount(0) }}
-                  data={[{ value: 'baht', label: '฿' }, { value: 'percent', label: '%' }]}
-                  style={{ flexShrink: 0 }} />
-                <NumberInput size="xs" min={0} max={discountType === 'percent' ? 100 : undefined}
-                  value={discountAmount} style={{ width: 90 }}
-                  onChange={v => setDiscountAmount(Number(v) || 0)} hideControls decimalScale={2}
-                  rightSection={discountType === 'percent' ? <Text size="xs" c="dimmed" mr={6}>%</Text> : null} />
+          </div>
+          <div style={{ padding: '16px 20px' }}>
+            <Stack gap={8}>
+              <Group justify="space-between">
+                <Text size="sm" c="dimmed">รวมสินค้า ({itemCount} รายการ)</Text>
+                <Text size="sm" fw={600}>฿{fmt(calc.subtotal)}</Text>
               </Group>
-            </Group>
-            {discountType === 'percent' && calc.discount > 0 && (
-              <Group justify="flex-end">
-                <Text size="xs" c="red">-฿{fmt(calc.discount)}</Text>
+              <Group justify="space-between" align="center">
+                <Text size="sm" c="dimmed">ส่วนลดรวม</Text>
+                <Group gap={4}>
+                  <SegmentedControl size="xs" value={discountType}
+                    onChange={v => { setDiscountType(v as 'baht' | 'percent'); setDiscountAmount(0) }}
+                    data={[{ value: 'baht', label: '฿' }, { value: 'percent', label: '%' }]}
+                    style={{ flexShrink: 0 }} />
+                  <NumberInput size="xs" min={0} max={discountType === 'percent' ? 100 : undefined}
+                    value={discountAmount} style={{ width: 90 }}
+                    onChange={v => setDiscountAmount(Number(v) || 0)} hideControls decimalScale={2}
+                    rightSection={discountType === 'percent' ? <Text size="xs" c="dimmed" mr={6}>%</Text> : null} />
+                </Group>
               </Group>
-            )}
-            {priceType !== 'no_vat' && (
-              <>
-                <Divider variant="dashed" my={4} />
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">มูลค่าก่อน VAT</Text>
-                  <Text size="sm">฿{fmt(calc.amtBeforeVat)}</Text>
+              {discountType === 'percent' && calc.discount > 0 && (
+                <Group justify="flex-end">
+                  <Text size="xs" c="red" fw={600}>-฿{fmt(calc.discount)}</Text>
                 </Group>
+              )}
+              {priceType !== 'no_vat' && (
+                <>
+                  <Divider variant="dashed" my={4} />
+                  <Group justify="space-between">
+                    <Text size="sm" c="dimmed">มูลค่าก่อน VAT</Text>
+                    <Text size="sm" fw={500}>฿{fmt(calc.amtBeforeVat)}</Text>
+                  </Group>
+                  <Group justify="space-between">
+                    <Text size="sm" c="dimmed">VAT {vatRate}%</Text>
+                    <Text size="sm" fw={500}>฿{fmt(calc.totalVat)}</Text>
+                  </Group>
+                </>
+              )}
+              {/* Grand total */}
+              <div style={{
+                margin: '8px -20px -16px',
+                padding: '16px 20px',
+                background: 'linear-gradient(135deg, #059669, #10b981)',
+                borderRadius: '0 0 8px 8px',
+              }}>
                 <Group justify="space-between">
-                  <Text size="sm" c="dimmed">VAT {vatRate}%</Text>
-                  <Text size="sm">฿{fmt(calc.totalVat)}</Text>
+                  <Text size="md" fw={700} c="white">ยอดรวมทั้งสิ้น</Text>
+                  <Text size="xl" fw={900} c="white" ff="monospace">฿{fmt(calc.total)}</Text>
                 </Group>
-              </>
-            )}
-            <Divider my={4} />
-            <Group justify="space-between">
-              <Text size="lg" fw={800}>ยอดรวมทั้งสิ้น</Text>
-              <Text size="xl" fw={800} c="green">฿{fmt(calc.total)}</Text>
-            </Group>
-          </Stack>
+              </div>
+            </Stack>
+          </div>
         </Card>
       </SimpleGrid>
 
       {/* ═══ Bottom Actions ═══ */}
-      <Group justify="flex-end" pb="xl">
-        <Button variant="light" color="gray" onClick={() => navigate('/sales-doc')}>ยกเลิก</Button>
-        <Button variant="light" leftSection={<IconDeviceFloppy size={16} />}
-          loading={createMutation.isPending} onClick={() => handleSubmit('draft')}>
-          บันทึกร่าง
-        </Button>
-        <Button leftSection={<IconCheck size={16} />}
-          loading={createMutation.isPending} onClick={() => handleSubmit('approved')}
-          style={{ background: config.gradient }}>
-          อนุมัติ{config.label}
-        </Button>
-      </Group>
+      <Card shadow="xs" padding="md" radius="md" withBorder>
+        <Group justify="space-between">
+          <Button variant="subtle" color="gray" onClick={() => navigate('/sales-doc')}>
+            ยกเลิก
+          </Button>
+          <Group gap="sm">
+            <Button variant="light" leftSection={<IconDeviceFloppy size={16} />}
+              loading={createMutation.isPending} onClick={() => handleSubmit('draft')}
+              style={{ fontWeight: 600 }}>
+              บันทึกร่าง
+            </Button>
+            <Button size="md" leftSection={<IconCheck size={18} />}
+              loading={createMutation.isPending} onClick={() => handleSubmit('approved')}
+              style={{ background: config.gradient, fontWeight: 700, paddingLeft: 20, paddingRight: 24 }}>
+              อนุมัติ{config.label}
+            </Button>
+          </Group>
+        </Group>
+      </Card>
 
       {/* ═══ Approve + Payment Modal ═══ */}
       <Modal opened={approveModalOpen} onClose={() => setApproveModalOpen(false)}

@@ -104,7 +104,23 @@ router.get('/:id', async (req, res) => {
       [req.params.id]
     )
 
-    res.json({ ...docs[0], items })
+    // Fetch source (parent) document if ref_doc_id exists
+    let sourceDoc = null
+    if (docs[0].ref_doc_id) {
+      const srcRows = await executeQuery(
+        'SELECT id, doc_type, doc_number, status, total_amount, doc_date, customer_name FROM sales_documents WHERE id = ? AND company_id = ?',
+        [docs[0].ref_doc_id, req.user.companyId]
+      )
+      if (srcRows.length > 0) sourceDoc = srcRows[0]
+    }
+
+    // Fetch child (derived) documents that reference this one
+    const childDocs = await executeQuery(
+      'SELECT id, doc_type, doc_number, status, total_amount, doc_date, customer_name FROM sales_documents WHERE ref_doc_id = ? AND company_id = ? ORDER BY created_at',
+      [req.params.id, req.user.companyId]
+    )
+
+    res.json({ ...docs[0], items, sourceDoc, childDocs })
   } catch (error) {
     console.error('Get sales doc error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -120,7 +136,7 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
     await connection.beginTransaction()
     const companyId = req.user.companyId
     const {
-      docType, reference, saleId, customerId, customerName, customerAddress, customerTaxId,
+      docType, reference, saleId, refDocId, customerId, customerName, customerAddress, customerTaxId,
       customerPhone, customerEmail, docDate, dueDate, validUntil,
       priceType, discountAmount, salespersonId, note, internalNote,
       items, status: docStatus,
@@ -203,13 +219,13 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
 
     // Insert document
     const [docResult] = await connection.execute(
-      `INSERT INTO sales_documents (company_id, doc_type, doc_number, reference, sale_id,
+      `INSERT INTO sales_documents (company_id, doc_type, doc_number, ref_doc_id, reference, sale_id,
         customer_id, customer_name, customer_address, customer_tax_id, customer_phone, customer_email,
         doc_date, due_date, valid_until, price_type,
         subtotal, discount_amount, amount_before_vat, vat_rate, vat_amount, wht_amount, total_amount,
         status, salesperson_id, note, internal_note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [companyId, docType, docNumber, reference || null, saleId || null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [companyId, docType, docNumber, refDocId || null, reference || null, saleId || null,
         customerId || null, customerName || null, customerAddress || null,
         customerTaxId || null, customerPhone || null, customerEmail || null,
         docDate || new Date().toISOString().slice(0, 10), dueDate || null, validUntil || null,
@@ -218,6 +234,18 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
         finalStatus, salespersonId || null, note || null, internalNote || null, req.user.id]
     )
     const docId = docResult.insertId
+
+    // Update source document status when creating linked document
+    if (refDocId) {
+      if (docType === 'invoice') {
+        // quotation → invoice: mark quotation as accepted
+        await connection.execute(
+          "UPDATE sales_documents SET status = 'accepted' WHERE id = ? AND company_id = ? AND doc_type = 'quotation' AND status = 'approved'",
+          [refDocId, companyId]
+        )
+      }
+      // For delivery/receipt from invoice — no status change on the invoice itself
+    }
 
     // Insert items
     for (const item of processedItems) {
