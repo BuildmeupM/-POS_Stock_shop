@@ -9,6 +9,11 @@ const app = express()
 const PORT = process.env.PORT || 3001
 const HOST = process.env.HOST || '0.0.0.0'
 
+// Trust proxy when behind reverse proxy (Railway, Vercel, etc.)
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1)
+}
+
 // === Security Headers ===
 // Enable all Helmet defaults; CSP disabled in dev for flexibility (enable in production)
 app.use(helmet({
