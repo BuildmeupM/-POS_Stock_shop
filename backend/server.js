@@ -16,7 +16,8 @@ app.set('trust proxy', 1)
 // Enable all Helmet defaults; CSP disabled in dev for flexibility (enable in production)
 app.use(helmet({
   contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
-  crossOriginEmbedderPolicy: process.env.NODE_ENV === 'production',
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 }))
 
 // === CORS ===
