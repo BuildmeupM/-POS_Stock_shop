@@ -11,6 +11,7 @@ import {
   IconUsers, IconUserPlus, IconShieldCheck, IconDotsVertical, IconTrash, IconEdit, IconUserOff,
   IconUserCheck, IconEye, IconPrinter, IconCash, IconSettings, IconInfoCircle, IconTags, IconPlus,
   IconGripVertical, IconCheck, IconX, IconSun, IconMoon, IconDeviceDesktop, IconPalette,
+  IconSearch, IconLink,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
@@ -163,10 +164,18 @@ export default function SettingsPage() {
   })
 
   const [addUserOpen, setAddUserOpen] = useState(false)
+  const [addExistingOpen, setAddExistingOpen] = useState(false)
   const [editRoleOpen, setEditRoleOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState<any>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', fullName: '', nickName: '', role: 'staff' })
   const [editRole, setEditRole] = useState('')
+
+  /* ── Add existing user state ── */
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<any[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [selectedExistingUser, setSelectedExistingUser] = useState<any>(null)
+  const [existingUserRole, setExistingUserRole] = useState('staff')
 
   const addUserMutation = useMutation({
     mutationFn: (data: any) => api.post('/users', data),
@@ -175,6 +184,36 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['company-users'] })
       setAddUserOpen(false)
       setNewUser({ username: '', password: '', fullName: '', nickName: '', role: 'staff' })
+    },
+    onError: (err: any) => {
+      notifications.show({ title: 'เกิดข้อผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถเพิ่มผู้ใช้ได้', color: 'red' })
+    },
+  })
+
+  // Search existing users
+  useEffect(() => {
+    if (searchQuery.trim().length < 2) { setSearchResults([]); return }
+    const timer = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const res = await api.get('/users/search', { params: { q: searchQuery.trim() } })
+        setSearchResults(res.data)
+      } catch { setSearchResults([]) }
+      setSearchLoading(false)
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  const addExistingMutation = useMutation({
+    mutationFn: (data: { userId: number; role: string }) => api.post('/users/add-to-company', data),
+    onSuccess: (res: any) => {
+      notifications.show({ title: 'สำเร็จ', message: res.data.message, color: 'green' })
+      queryClient.invalidateQueries({ queryKey: ['company-users'] })
+      setAddExistingOpen(false)
+      setSearchQuery('')
+      setSearchResults([])
+      setSelectedExistingUser(null)
+      setExistingUserRole('staff')
     },
     onError: (err: any) => {
       notifications.show({ title: 'เกิดข้อผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถเพิ่มผู้ใช้ได้', color: 'red' })
@@ -497,11 +536,17 @@ export default function SettingsPage() {
                     <Badge variant="light" color="indigo" size="lg">{users.length} คน</Badge>
                   </Group>
                   {canEditUsers && (
-                    <Button leftSection={<IconUserPlus size={16} />}
-                      onClick={() => setAddUserOpen(true)}
-                      className="settings-save-btn">
-                      เพิ่มผู้ใช้งาน
-                    </Button>
+                    <Group gap="xs">
+                      <Button variant="light" leftSection={<IconLink size={16} />}
+                        onClick={() => setAddExistingOpen(true)}>
+                        เพิ่มจากผู้ใช้ที่มีอยู่
+                      </Button>
+                      <Button leftSection={<IconUserPlus size={16} />}
+                        onClick={() => setAddUserOpen(true)}
+                        className="settings-save-btn">
+                        สร้างผู้ใช้ใหม่
+                      </Button>
+                    </Group>
                   )}
                 </Group>
 
@@ -742,6 +787,78 @@ export default function SettingsPage() {
               onClick={() => selectedUser && updateRoleMutation.mutate({ userId: selectedUser.id, role: editRole })}
               className="settings-save-btn">
               บันทึก
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* ── Modal: Add Existing User to Company ── */}
+      <Modal opened={addExistingOpen} onClose={() => { setAddExistingOpen(false); setSearchQuery(''); setSearchResults([]); setSelectedExistingUser(null) }}
+        title="เพิ่มผู้ใช้ที่มีอยู่เข้าบริษัท" centered size="md">
+        <Stack gap="md">
+          <TextInput
+            label="ค้นหาผู้ใช้" placeholder="พิมพ์ชื่อหรือ username (อย่างน้อย 2 ตัวอักษร)"
+            leftSection={<IconSearch size={16} />}
+            value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setSelectedExistingUser(null) }}
+          />
+
+          {searchLoading && <Loader size="sm" style={{ margin: '0 auto' }} />}
+
+          {!searchLoading && searchResults.length > 0 && (
+            <Stack gap={4}>
+              <Text size="xs" c="dimmed">ผลการค้นหา ({searchResults.length} คน)</Text>
+              {searchResults.map((u: any) => (
+                <Card key={u.id} padding="xs" radius="sm" withBorder
+                  style={{
+                    cursor: 'pointer',
+                    borderColor: selectedExistingUser?.id === u.id ? 'var(--app-primary)' : undefined,
+                    backgroundColor: selectedExistingUser?.id === u.id ? 'var(--mantine-color-indigo-light)' : undefined,
+                  }}
+                  onClick={() => setSelectedExistingUser(u)}>
+                  <Group gap={8}>
+                    <div className="settings-user-avatar">
+                      {(u.nick_name || u.full_name || '?').charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <Text size="sm" fw={600}>{u.full_name}</Text>
+                      <Text size="xs" c="dimmed">{u.username}{u.nick_name ? ` · ${u.nick_name}` : ''}</Text>
+                    </div>
+                    {selectedExistingUser?.id === u.id && <IconCheck size={16} color="var(--app-primary)" style={{ marginLeft: 'auto' }} />}
+                  </Group>
+                </Card>
+              ))}
+            </Stack>
+          )}
+
+          {!searchLoading && searchQuery.trim().length >= 2 && searchResults.length === 0 && (
+            <Text size="sm" c="dimmed" ta="center" py="md">ไม่พบผู้ใช้ที่ตรงกัน หรืออยู่ในบริษัทนี้แล้ว</Text>
+          )}
+
+          {selectedExistingUser && (
+            <Select label="ตำแหน่งในบริษัทนี้" data={ASSIGNABLE_ROLES} required
+              value={existingUserRole} onChange={(v) => setExistingUserRole(v || 'staff')}
+              renderOption={({ option }) => (
+                <Group gap={8}>
+                  <Badge variant="light" color={ROLE_MAP[option.value]?.color} size="sm">{option.label}</Badge>
+                  <Text size="xs" c="dimmed">{ROLE_MAP[option.value]?.desc}</Text>
+                </Group>
+              )} />
+          )}
+
+          <div className="settings-info-box">
+            <Text size="xs" c="dimmed">
+              ค้นหาผู้ใช้ที่มี account อยู่แล้วในระบบ เพื่อเพิ่มเข้าบริษัทนี้ ผู้ใช้จะสามารถสลับบริษัทได้จากเมนูด้านบน
+            </Text>
+          </div>
+
+          <Group justify="flex-end" mt="sm">
+            <Button variant="subtle" onClick={() => { setAddExistingOpen(false); setSearchQuery(''); setSearchResults([]); setSelectedExistingUser(null) }}>ยกเลิก</Button>
+            <Button leftSection={<IconLink size={16} />}
+              loading={addExistingMutation.isPending}
+              disabled={!selectedExistingUser}
+              onClick={() => selectedExistingUser && addExistingMutation.mutate({ userId: selectedExistingUser.id, role: existingUserRole })}
+              className="settings-save-btn">
+              เพิ่มเข้าบริษัท
             </Button>
           </Group>
         </Stack>

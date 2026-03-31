@@ -98,6 +98,77 @@ router.post('/', roleCheck('owner', 'admin'), validate(createUserSchema), async 
   }
 })
 
+// GET /api/users/search — search existing users by username (for adding to company)
+router.get('/search', roleCheck('owner', 'admin'), async (req, res) => {
+  try {
+    const { q } = req.query
+    if (!q || String(q).trim().length < 2) {
+      return res.json([])
+    }
+
+    // Find users matching query but NOT already in current company
+    const users = await executeQuery(
+      `SELECT u.id, u.username, u.full_name, u.nick_name
+       FROM users u
+       WHERE u.is_active = TRUE
+         AND (u.username LIKE ? OR u.full_name LIKE ? OR u.nick_name LIKE ?)
+         AND u.id NOT IN (
+           SELECT uc.user_id FROM user_companies uc WHERE uc.company_id = ?
+         )
+       LIMIT 10`,
+      [`%${q}%`, `%${q}%`, `%${q}%`, req.user.companyId]
+    )
+
+    res.json(users)
+  } catch (error) {
+    console.error('Search users error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// POST /api/users/add-to-company — add existing user to current company
+router.post('/add-to-company', roleCheck('owner', 'admin'), async (req, res) => {
+  try {
+    const { userId, role } = req.body
+
+    if (!userId || !role) {
+      return res.status(400).json({ message: 'กรุณาระบุผู้ใช้และตำแหน่ง' })
+    }
+
+    const validRoles = ['admin', 'manager', 'cashier', 'accountant', 'staff']
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ message: 'ตำแหน่งไม่ถูกต้อง' })
+    }
+
+    // Check user exists
+    const user = await executeQuery('SELECT id, full_name FROM users WHERE id = ? AND is_active = TRUE', [userId])
+    if (user.length === 0) {
+      return res.status(404).json({ message: 'ไม่พบผู้ใช้งาน' })
+    }
+
+    // Check if already in company
+    const existing = await executeQuery(
+      'SELECT id FROM user_companies WHERE user_id = ? AND company_id = ?',
+      [userId, req.user.companyId]
+    )
+    if (existing.length > 0) {
+      return res.status(409).json({ message: 'ผู้ใช้นี้อยู่ในบริษัทนี้แล้ว' })
+    }
+
+    await executeQuery(
+      'INSERT INTO user_companies (user_id, company_id, role, is_default) VALUES (?, ?, ?, FALSE)',
+      [userId, req.user.companyId, role]
+    )
+
+    res.status(201).json({
+      message: `เพิ่ม ${user[0].full_name} เข้าบริษัทสำเร็จ`,
+    })
+  } catch (error) {
+    console.error('Add user to company error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
 // PUT /api/users/:id/role — update user's role in the current company
 router.put('/:id/role', roleCheck('owner', 'admin'), validate(updateRoleSchema), async (req, res) => {
   try {
