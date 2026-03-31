@@ -1,17 +1,20 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   TextInput, Button, Group, Text, ActionIcon, Stack, Badge, Loader, Select,
-  NumberInput, Modal, SimpleGrid, Kbd, Tooltip, ScrollArea
+  NumberInput, Modal, SimpleGrid, Kbd, Tooltip, ScrollArea, UnstyledButton
 } from '@mantine/core'
+import { useDebouncedValue } from '@mantine/hooks'
 import { notifications } from '@mantine/notifications'
 import {
   IconPlus, IconMinus, IconTrash, IconSearch, IconCash, IconBarcode,
   IconUser, IconPlayerPause, IconPlayerPlay, IconX, IconCheck,
   IconPercentage, IconCreditCard, IconQrcode, IconBuildingBank, IconTool,
   IconPrinter, IconClock, IconShoppingCart, IconPackage, IconCategory, IconReceipt,
-  IconWallet, IconStar, IconGift, IconCamera, IconCameraOff
+  IconWallet, IconStar, IconGift, IconCamera, IconCameraOff,
+  IconFlame, IconHistory, IconHeart, IconHeartFilled, IconList, IconLayoutGrid,
+  IconChevronRight, IconChevronDown, IconFilter, IconFilterOff
 } from '@tabler/icons-react'
 import { Html5Qrcode } from 'html5-qrcode'
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner'
@@ -28,7 +31,7 @@ interface HeldOrder {
   id: number; label: string; items: CartItem[]; customerId: string; heldAt: Date
 }
 
-// Category color palette — cycles through for each category
+// Category color palette
 const CAT_PALETTE = [
   { bg: 'linear-gradient(135deg, #dbeafe, #bfdbfe)', color: '#2563eb', light: '#eff6ff' },
   { bg: 'linear-gradient(135deg, #fef3c7, #fde68a)', color: '#d97706', light: '#fffbeb' },
@@ -40,7 +43,7 @@ const CAT_PALETTE = [
   { bg: 'linear-gradient(135deg, #fef9c3, #fde047)', color: '#ca8a04', light: '#fefce8' },
 ]
 
-// Wallet channel type → icon/color mapping
+// Wallet channel type → icon/color
 const CHANNEL_TYPE_INFO: Record<string, { icon: any; color: string }> = {
   cash:         { icon: IconCash,         color: '#059669' },
   bank_account: { icon: IconBuildingBank,  color: '#2563eb' },
@@ -52,16 +55,23 @@ const CHANNEL_TYPE_INFO: Record<string, { icon: any; color: string }> = {
   other:        { icon: IconCash,          color: '#6b7280' },
 }
 
-/** Derive the backend base URL (without /api) from the axios instance */
 import { getBackendUrl } from '../../services/api'
 const posBackendBase = getBackendUrl()
 
+type QuickTab = 'all' | 'best-sellers' | 'recent' | 'favorites'
+type ViewMode = 'grid' | 'list'
+
+const PAGE_LIMIT = 50
 
 export default function POSPage() {
   const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
+  const [debouncedSearch] = useDebouncedValue(search, 300)
   const [activeCategory, setActiveCategory] = useState<string>('all')
   const [posAttrFilters, setPosAttrFilters] = useState<Record<number, string | null>>({})
+  const [quickTab, setQuickTab] = useState<QuickTab>('all')
+  const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [showCategorySidebar, setShowCategorySidebar] = useState(true)
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null)
   const [paymentChannelId, setPaymentChannelId] = useState<number | null>(null)
   const [paymentChannelName, setPaymentChannelName] = useState<string>('')
@@ -81,15 +91,15 @@ export default function POSPage() {
   const [redeemPoints, setRedeemPoints] = useState<number>(0)
   const [loyaltyDiscount, setLoyaltyDiscount] = useState<number>(0)
   const [selectedCustomerInfo, setSelectedCustomerInfo] = useState<{ points_balance?: number; price_level?: string; contact_id?: number } | null>(null)
-  // === Min price override (owner/admin only) ===
   const [overridePending, setOverridePending] = useState<{ productId: number; discount: number } | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const receiptRef = useRef<HTMLDivElement>(null)
+  const gridAreaRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
   const { user, activeCompany } = useAuthStore()
   const navigate = useNavigate()
 
-  // === Camera Barcode Scanner ===
+  // Camera Scanner
   const [cameraOpen, setCameraOpen] = useState(false)
   const cameraRef = useRef<Html5Qrcode | null>(null)
   const cameraDivId = 'pos-camera-scanner'
@@ -103,15 +113,106 @@ export default function POSPage() {
   const vatEnabled = companySettings?.settings?.vat_enabled !== false
   const vatRate = (companySettings?.settings?.vat_rate ?? 7) / 100
 
-  const { data: products, isLoading } = useQuery({
-    queryKey: ['pos-products', search],
-    queryFn: () => api.get('/products', { params: { search, active: 'true' } }).then(r => r.data),
+  // Build server-side filter params
+  const attrValueIdsParam = useMemo(() => {
+    const ids: number[] = []
+    if (activeCategory !== 'all') ids.push(Number(activeCategory))
+    Object.entries(posAttrFilters).forEach(([, v]) => { if (v) ids.push(Number(v)) })
+    return ids.length > 0 ? ids.join(',') : undefined
+  }, [activeCategory, posAttrFilters])
+
+  // === INFINITE SCROLL: paginated products ===
+  const {
+    data: productsData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+  } = useInfiniteQuery({
+    queryKey: ['pos-products', debouncedSearch, attrValueIdsParam],
+    queryFn: ({ pageParam = 1 }) =>
+      api.get('/products', {
+        params: {
+          page: pageParam,
+          limit: PAGE_LIMIT,
+          search: debouncedSearch || undefined,
+          active: 'true',
+          attrValueIds: attrValueIdsParam,
+        },
+      }).then(r => r.data),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.pagination) return undefined
+      const { page, totalPages } = lastPage.pagination
+      return page < totalPages ? page + 1 : undefined
+    },
+    enabled: quickTab === 'all',
   })
-  const { data: categories } = useQuery({
-    queryKey: ['categories'],
-    queryFn: () => api.get('/products/categories/all').then(r => r.data),
+
+  const allProducts = useMemo(() => {
+    if (!productsData?.pages) return []
+    return productsData.pages.flatMap(p => p.data || p)
+  }, [productsData])
+
+  // === Quick Tab queries ===
+  const { data: bestSellers = [], isLoading: loadingBest } = useQuery({
+    queryKey: ['pos-best-sellers'],
+    queryFn: () => api.get('/pos-products/best-sellers', { params: { limit: 30 } }).then(r => r.data),
+    staleTime: 1000 * 60 * 3,
+    enabled: quickTab === 'best-sellers',
   })
-  // === Wallet channels (for payment) ===
+
+  const { data: recentProducts = [], isLoading: loadingRecent } = useQuery({
+    queryKey: ['pos-recent'],
+    queryFn: () => api.get('/pos-products/recent', { params: { limit: 30 } }).then(r => r.data),
+    staleTime: 1000 * 60 * 2,
+    enabled: quickTab === 'recent',
+  })
+
+  const { data: favoriteProducts = [], isLoading: loadingFavs } = useQuery({
+    queryKey: ['pos-favorites'],
+    queryFn: () => api.get('/pos-products/favorites').then(r => r.data),
+    staleTime: 1000 * 60 * 2,
+    enabled: quickTab === 'favorites',
+  })
+
+  // Favorites mutation
+  const addFavMutation = useMutation({
+    mutationFn: (productId: number) => api.post('/pos-products/favorites', { productId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pos-favorites'] }),
+  })
+  const removeFavMutation = useMutation({
+    mutationFn: (productId: number) => api.delete(`/pos-products/favorites/${productId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pos-favorites'] }),
+  })
+
+  const favoriteIds = useMemo(() => new Set((favoriteProducts || []).map((p: any) => p.id)), [favoriteProducts])
+  const toggleFavorite = useCallback((productId: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (favoriteIds.has(productId)) removeFavMutation.mutate(productId)
+    else addFavMutation.mutate(productId)
+  }, [favoriteIds, addFavMutation, removeFavMutation])
+
+  // Current displayed products based on tab
+  const displayProducts = useMemo(() => {
+    if (quickTab === 'best-sellers') return bestSellers
+    if (quickTab === 'recent') return recentProducts
+    if (quickTab === 'favorites') return favoriteProducts
+    return allProducts
+  }, [quickTab, allProducts, bestSellers, recentProducts, favoriteProducts])
+
+  const displayLoading = quickTab === 'all' ? isLoading
+    : quickTab === 'best-sellers' ? loadingBest
+    : quickTab === 'recent' ? loadingRecent
+    : loadingFavs
+
+  // Attribute groups & categories
+  const { data: attributeGroups } = useQuery({
+    queryKey: ['attribute-groups'],
+    queryFn: () => api.get('/products/attribute-groups').then(r => r.data),
+    staleTime: 1000 * 60 * 5,
+  })
+
   const { data: walletChannels = [] } = useQuery({
     queryKey: ['wallet-active'],
     queryFn: () => api.get('/wallet', { params: { active: 'true' } }).then(r => r.data),
@@ -123,29 +224,6 @@ export default function POSPage() {
     queryFn: () => api.get('/sales/customers/all').then(r => r.data),
   })
 
-  const { data: attributeGroups } = useQuery({
-    queryKey: ['attribute-groups'],
-    queryFn: () => api.get('/products/attribute-groups').then(r => r.data),
-    staleTime: 1000 * 60 * 5,
-  })
-
-  // Build category color map
-  const catColorMap = useMemo(() => {
-    const map: Record<string, typeof CAT_PALETTE[0]> = {}
-    categories?.forEach((cat: any, i: number) => {
-      map[String(cat.id)] = CAT_PALETTE[i % CAT_PALETTE.length]
-    })
-    return map
-  }, [categories])
-
-  // Build category name map
-  const catNameMap = useMemo(() => {
-    const map: Record<string, string> = {}
-    categories?.forEach((cat: any) => { map[String(cat.id)] = cat.name })
-    return map
-  }, [categories])
-
-  // === First attribute group as category tabs ===
   const firstAttrGroup = useMemo(() => {
     if (!attributeGroups || attributeGroups.length === 0) return null
     return attributeGroups[0]
@@ -159,6 +237,20 @@ export default function POSPage() {
       pal: CAT_PALETTE[i % CAT_PALETTE.length],
     }))
   }, [firstAttrGroup])
+
+  // === Infinite scroll trigger ===
+  useEffect(() => {
+    if (quickTab !== 'all') return
+    const el = gridAreaRef.current
+    if (!el) return
+    const onScroll = () => {
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
+        if (hasNextPage && !isFetchingNextPage) fetchNextPage()
+      }
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [quickTab, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   // === Sale Mutation ===
   const saleMutation = useMutation({
@@ -182,7 +274,6 @@ export default function POSPage() {
         loyaltyDiscount,
         redeemPoints,
       })
-      // Show points earned notification
       if (res.data.pointsEarned > 0) {
         notifications.show({
           title: 'สะสมแต้ม',
@@ -197,7 +288,10 @@ export default function POSPage() {
       setPaymentChannelId(null); setPaymentChannelName('')
       setBillDiscount(0); setBillDiscountType('baht')
       setLoyaltyDiscount(0); setRedeemPoints(0); setSelectedCustomerInfo(null)
-      queryClient.invalidateQueries({ queryKey: ['pos-products'] })
+      queryClient.resetQueries({ queryKey: ['pos-products'] })
+      queryClient.invalidateQueries({ queryKey: ['pos-recent'] })
+      queryClient.invalidateQueries({ queryKey: ['pos-best-sellers'] })
+      queryClient.invalidateQueries({ queryKey: ['pos-favorites'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['customers'] })
     },
@@ -208,13 +302,12 @@ export default function POSPage() {
 
   const fmt = (n: number) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2 }).format(n)
 
-  // === Loyalty: track selected customer info ===
+  // === Loyalty ===
   const loyaltySettings = companySettings?.settings || {}
   const pointsPerBaht = loyaltySettings.points_per_baht ?? 1
   const pointsValue = loyaltySettings.points_value ?? 1
   const minRedeemPoints = loyaltySettings.min_redeem_points ?? 100
 
-  // When customer changes, update selected customer info
   useEffect(() => {
     if (!customerId) {
       setSelectedCustomerInfo(null)
@@ -222,7 +315,6 @@ export default function POSPage() {
       setRedeemPoints(0)
       return
     }
-    // Find in the customers/contacts search results
     const found = (customers || []).find((c: any) => String(c.id) === customerId)
     if (found && found.source === 'contact') {
       setSelectedCustomerInfo({
@@ -237,7 +329,6 @@ export default function POSPage() {
     setRedeemPoints(0)
   }, [customerId, customers])
 
-  // Get price based on customer's price level
   const getCustomerPrice = useCallback((p: any): number => {
     const level = selectedCustomerInfo?.price_level
     if (level === 'wholesale' && p.wholesale_price) return parseFloat(p.wholesale_price)
@@ -245,43 +336,21 @@ export default function POSPage() {
     return parseFloat(p.selling_price)
   }, [selectedCustomerInfo?.price_level])
 
-  // Re-price cart items when price level changes
   useEffect(() => {
-    if (!products || products.length === 0 || cart.length === 0) return
+    if (!allProducts || allProducts.length === 0 || cart.length === 0) return
     const level = selectedCustomerInfo?.price_level
     setCart(prev => prev.map(item => {
       if (item.isService) return item
-      const product = products.find((p: any) => p.id === item.productId)
+      const product = allProducts.find((p: any) => p.id === item.productId)
       if (!product) return item
       let newPrice = parseFloat(product.selling_price)
       if (level === 'wholesale' && product.wholesale_price) newPrice = parseFloat(product.wholesale_price)
       if (level === 'vip' && product.vip_price) newPrice = parseFloat(product.vip_price)
       return { ...item, unitPrice: newPrice }
     }))
-  }, [selectedCustomerInfo?.price_level, products])
+  }, [selectedCustomerInfo?.price_level, allProducts])
 
-  // === Computed ===
-  const filteredProducts = useMemo(() => {
-    let list = products || []
-    // Filter by first attribute group (used as category tabs)
-    if (activeCategory !== 'all' && firstAttrGroup) {
-      const catValueId = Number(activeCategory)
-      list = list.filter((p: any) =>
-        (p.attributes || []).some((a: any) => a.valueId === catValueId)
-      )
-    }
-    // Multi-group attribute filter (AND) — skip first group since it's shown as tabs
-    const activeFilters = Object.entries(posAttrFilters).filter(([, v]) => v)
-    if (activeFilters.length > 0) {
-      list = list.filter((p: any) =>
-        activeFilters.every(([, valueId]) =>
-          (p.attributes || []).some((a: any) => a.valueId === Number(valueId))
-        )
-      )
-    }
-    return list
-  }, [products, activeCategory, posAttrFilters, firstAttrGroup])
-
+  // === Computed totals ===
   const itemSubtotal = cart.reduce((sum, c) => sum + c.unitPrice * c.quantity, 0)
   const itemDiscountTotal = cart.reduce((sum, c) => sum + (c.discount || 0), 0)
   const afterItemDiscount = itemSubtotal - itemDiscountTotal
@@ -295,9 +364,19 @@ export default function POSPage() {
 
   // === Cart Actions ===
   const addToCart = useCallback((p: any) => {
+    const stock = parseInt(p.total_stock) || 0
     const price = getCustomerPrice(p)
     setCart(prev => {
       const ex = prev.find(c => c.productId === p.id)
+      const currentQty = ex ? ex.quantity : 0
+      if (stock > 0 && currentQty + 1 > stock) {
+        notifications.show({
+          title: 'สต๊อกไม่พอ',
+          message: `${p.name} เหลือเพียง ${stock} ชิ้นในคลัง`,
+          color: 'orange', autoClose: 3000,
+        })
+        return prev
+      }
       if (ex) return prev.map(c => c.productId === p.id ? { ...c, quantity: c.quantity + 1 } : c)
       return [...prev, { productId: p.id, name: p.name, sku: p.sku, unitPrice: price, quantity: 1, discount: 0 }]
     })
@@ -305,25 +384,33 @@ export default function POSPage() {
 
   const updateQty = (pid: number, q: number) => {
     if (q <= 0) { removeItem(pid); return }
+    // Check stock limit
+    const prod = displayProducts.find((p: any) => p.id === pid)
+    const stock = prod ? parseInt(prod.total_stock) || 0 : 0
+    if (stock > 0 && q > stock) {
+      notifications.show({
+        title: 'สต๊อกไม่พอ',
+        message: `${prod?.name || 'สินค้า'} เหลือเพียง ${stock} ชิ้นในคลัง`,
+        color: 'orange', autoClose: 3000,
+      })
+      return
+    }
     setCart(prev => prev.map(c => c.productId === pid ? { ...c, quantity: q } : c))
   }
   const updateDiscount = (pid: number, d: number) => {
     const item = cart.find(c => c.productId === pid)
     if (!item) return
-    const prod = (products || []).find((p: any) => p.id === pid)
+    const prod = displayProducts.find((p: any) => p.id === pid)
     const minPrice = prod ? (parseFloat(prod.min_selling_price) || 0) : 0
 
     if (minPrice > 0) {
-      // max total line discount = (unitPrice - minPrice) * quantity
       const maxDisc = (item.unitPrice - minPrice) * item.quantity
       if (d > maxDisc) {
         const role = activeCompany?.role || ''
         if (role === 'owner' || role === 'admin') {
-          // owner/admin: show override confirmation
           setOverridePending({ productId: pid, discount: d })
           return
         }
-        // other roles: cap discount and show toast
         notifications.show({
           title: '⚠️ ราคาขั้นต่ำ',
           message: `ลดราคาสูงสุดได้ ฿${(maxDisc).toFixed(2)} (ราคาขั้นต่ำ ฿${minPrice.toFixed(2)}/ชิ้น)`,
@@ -364,7 +451,7 @@ export default function POSPage() {
   const handleBarcodeScan = useCallback(async (barcode: string) => {
     try {
       const res = await api.get('/products', { params: { search: barcode, active: 'true' } })
-      const matched = res.data
+      const matched = Array.isArray(res.data) ? res.data : res.data.data || []
       const exact = matched.find((p: any) => p.barcode === barcode || p.sku === barcode)
       if (exact) { addToCart(exact); notifications.show({ title: 'สแกนสำเร็จ', message: exact.name, color: 'teal', autoClose: 1500 }) }
       else if (matched.length > 0) addToCart(matched[0])
@@ -389,7 +476,6 @@ export default function POSPage() {
   // === Camera Scanner ===
   const startCamera = useCallback(async () => {
     setCameraOpen(true)
-    // Wait for DOM to mount
     setTimeout(async () => {
       try {
         const html5QrCode = new Html5Qrcode(cameraDivId)
@@ -426,7 +512,6 @@ export default function POSPage() {
     if (paymentMethod === 'cash' && receivedAmount < grandTotal) {
       notifications.show({ title: 'จำนวนเงินไม่พอ', message: 'กรุณาใส่จำนวนเงินที่รับ', color: 'red' }); return
     }
-    // Redeem points first if applicable
     if (redeemPoints > 0 && selectedCustomerInfo?.contact_id) {
       try {
         await api.post('/loyalty/redeem', { contactId: selectedCustomerInfo.contact_id, points: redeemPoints })
@@ -445,6 +530,91 @@ export default function POSPage() {
 
   const quickCashAmounts = [20, 50, 100, 500, 1000]
 
+  // Count active filters
+  const activeFilterCount = Object.values(posAttrFilters).filter(Boolean).length + (activeCategory !== 'all' ? 1 : 0)
+
+  // Product card renderer
+  const renderProductCard = (p: any) => {
+    const stock = parseInt(p.total_stock) || 0
+    const outOfStock = stock <= 0
+    const inCart = cart.find(c => c.productId === p.id)
+    const firstAttrVal = firstAttrGroup
+      ? (p.attributes || []).find((a: any) => a.groupId === firstAttrGroup.id)
+      : null
+    const matchedCat = firstAttrVal
+      ? attrCategoryValues.find((c: any) => c.id === firstAttrVal.valueId)
+      : null
+    const pal = matchedCat?.pal || CAT_PALETTE[0]
+    const catName = matchedCat?.name || ''
+    const initial = p.name?.charAt(0)?.toUpperCase() || '?'
+    const productImgUrl = p.image_url ? `${posBackendBase}${p.image_url}` : null
+    const isFav = favoriteIds.has(p.id)
+
+    if (viewMode === 'list') {
+      return (
+        <div key={p.id}
+          className={`pos2-list-item ${outOfStock ? 'disabled' : ''} ${inCart ? 'in-cart' : ''}`}
+          onClick={() => !outOfStock && addToCart(p)}>
+          <div className="pos2-list-img" style={{ background: productImgUrl ? 'transparent' : pal.bg }}>
+            {productImgUrl ? (
+              <img src={productImgUrl} alt={p.name}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} loading="lazy" />
+            ) : (
+              <span style={{ fontSize: 18, fontWeight: 900, opacity: 0.35, color: pal.color }}>{initial}</span>
+            )}
+          </div>
+          <div className="pos2-list-info">
+            <div className="pos2-list-name">{p.name}</div>
+            <div className="pos2-list-meta">
+              {catName && <span className="pos2-card-cat" style={{ color: pal.color, background: pal.light }}>{catName}</span>}
+              <span className="pos2-list-sku">{p.sku}</span>
+              {stock > 0 && stock <= (p.min_stock || 5) && <Badge size="xs" color="orange" variant="light">เหลือน้อย</Badge>}
+            </div>
+          </div>
+          <div className="pos2-list-right">
+            <span className="pos2-card-price">฿{fmt(getCustomerPrice(p))}</span>
+            {inCart && <Badge size="sm" circle color="indigo">{inCart.quantity}</Badge>}
+            {outOfStock && <Badge size="xs" color="red">หมด</Badge>}
+          </div>
+          <ActionIcon size={24} variant="subtle" color={isFav ? 'red' : 'gray'}
+            onClick={(e) => toggleFavorite(p.id, e)} style={{ flexShrink: 0 }}>
+            {isFav ? <IconHeartFilled size={14} /> : <IconHeart size={14} />}
+          </ActionIcon>
+        </div>
+      )
+    }
+
+    return (
+      <div key={p.id}
+        className={`pos2-card ${outOfStock ? 'disabled' : ''} ${inCart ? 'in-cart' : ''}`}
+        onClick={() => !outOfStock && addToCart(p)}>
+        <div className="pos2-card-img" style={{ background: productImgUrl ? 'transparent' : pal.bg }}>
+          {productImgUrl ? (
+            <img src={productImgUrl} alt={p.name}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} loading="lazy" />
+          ) : (
+            <span className="pos2-card-initial" style={{ color: pal.color }}>{initial}</span>
+          )}
+          {inCart && <span className="pos2-card-badge">{inCart.quantity}</span>}
+          {outOfStock && <span className="pos2-card-oos">หมด</span>}
+          <ActionIcon size={22} variant="subtle" color={isFav ? 'red' : 'gray'}
+            className="pos2-card-fav"
+            onClick={(e) => toggleFavorite(p.id, e)}>
+            {isFav ? <IconHeartFilled size={13} /> : <IconHeart size={13} />}
+          </ActionIcon>
+        </div>
+        <div className="pos2-card-info">
+          <div className="pos2-card-name">{p.name}</div>
+          <div className="pos2-card-bottom">
+            <span className="pos2-card-price">฿{fmt(getCustomerPrice(p))}</span>
+            {stock > 0 && <span className={`pos2-card-stock ${stock <= (p.min_stock || 5) ? 'low' : ''}`}>{stock} ชิ้น</span>}
+            {catName && <span className="pos2-card-cat" style={{ color: pal.color, background: pal.light }}>{catName}</span>}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="pos2">
@@ -454,8 +624,8 @@ export default function POSPage() {
           <div className="pos2-search-row">
             <TextInput ref={searchRef} placeholder="ค้นหาสินค้า ชื่อ, SKU, Barcode..."
               leftSection={<IconSearch size={18} />} value={search}
-              onChange={e => setSearch(e.target.value)} size="md"
-              className="pos2-search" data-barcode="true" />
+              onChange={e => { setSearch(e.target.value); if (quickTab !== 'all') setQuickTab('all') }}
+              size="md" className="pos2-search" data-barcode="true" />
             <Tooltip label="สแกนบาร์โค้ดด้วยกล้อง">
               <ActionIcon size="xl" variant="light" color="indigo"
                 onClick={cameraOpen ? stopCamera : startCamera}
@@ -485,118 +655,164 @@ export default function POSPage() {
             </div>
           )}
 
-          {/* Category tabs — from first attribute group */}
-          <ScrollArea type="never" className="pos2-cat-scroll">
-            <div className="pos2-cat-row">
-              <button className={`pos2-cat ${activeCategory === 'all' ? 'active' : ''}`}
-                onClick={() => setActiveCategory('all')}
-                style={{ '--cat-color': '#6366f1', '--cat-bg': '#eef2ff' } as React.CSSProperties}>
-                <IconCategory size={20} />
-                <span>ทั้งหมด</span>
-              </button>
-              {attrCategoryValues.map((cat: any) => (
-                <button key={cat.id}
-                  className={`pos2-cat ${activeCategory === String(cat.id) ? 'active' : ''}`}
-                  onClick={() => setActiveCategory(String(cat.id))}
-                  style={{ '--cat-color': cat.pal.color, '--cat-bg': cat.pal.light } as React.CSSProperties}>
-                  <span>{cat.name}</span>
+          {/* Quick Tabs + View Mode */}
+          <div className="pos2-toolbar">
+            <div className="pos2-quick-tabs">
+              {[
+                { key: 'all' as QuickTab, label: 'ทั้งหมด', icon: IconCategory },
+                { key: 'best-sellers' as QuickTab, label: 'ขายดี', icon: IconFlame },
+                { key: 'recent' as QuickTab, label: 'ล่าสุด', icon: IconHistory },
+                { key: 'favorites' as QuickTab, label: 'โปรด', icon: IconHeart },
+              ].map(tab => (
+                <button key={tab.key}
+                  className={`pos2-quick-tab ${quickTab === tab.key ? 'active' : ''}`}
+                  onClick={() => { setQuickTab(tab.key); if (tab.key !== 'all') { setSearch(''); setActiveCategory('all'); setPosAttrFilters({}) } }}>
+                  <tab.icon size={16} />
+                  <span>{tab.label}</span>
                 </button>
               ))}
             </div>
-          </ScrollArea>
-
-          {/* Attribute filter selects (remaining groups, skip first) */}
-          {(attributeGroups || []).length > 1 && (
-            <div style={{ display: 'flex', gap: 8, padding: '0 12px 8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {(attributeGroups || []).slice(1).map((g: any) => (
-                <Select key={g.id}
-                  size="xs"
-                  placeholder={g.name}
-                  data={(g.values || []).map((v: any) => ({ value: String(v.id), label: v.value }))}
-                  value={posAttrFilters[g.id] || null}
-                  onChange={(val) => setPosAttrFilters(prev => ({ ...prev, [g.id]: val }))}
-                  clearable
-                  style={{ minWidth: 120, maxWidth: 180 }}
-                />
-              ))}
-              {Object.values(posAttrFilters).some(v => v) && (
-                <Button size="xs" variant="subtle" color="gray"
-                  onClick={() => setPosAttrFilters({})}
-                  leftSection={<IconX size={12} />}>
-                  ล้าง
-                </Button>
+            <div className="pos2-toolbar-right">
+              {quickTab === 'all' && (
+                <Tooltip label={showCategorySidebar ? 'ซ่อนหมวดหมู่' : 'แสดงหมวดหมู่'}>
+                  <ActionIcon size="sm" variant={activeFilterCount > 0 ? 'filled' : 'light'} color="indigo"
+                    onClick={() => setShowCategorySidebar(v => !v)}>
+                    {activeFilterCount > 0 ? <IconFilter size={14} /> : <IconFilterOff size={14} />}
+                  </ActionIcon>
+                </Tooltip>
               )}
-            </div>
-          )}
-
-          {/* Product Grid + Service Section */}
-          <div className="pos2-grid-area">
-            {/* === สินค้า === */}
-            {isLoading ? (
-              <div className="pos2-loading"><Loader size="md" color="indigo" /></div>
-            ) : filteredProducts?.length === 0 ? (
-              <div className="pos2-empty">
-                <IconSearch size={48} stroke={1.2} color="#ccc" />
-                <Text c="dimmed" fw={500} mt={8}>ไม่พบสินค้า</Text>
+              <div className="pos2-view-toggle">
+                <ActionIcon size="sm" variant={viewMode === 'grid' ? 'filled' : 'subtle'} color="indigo"
+                  onClick={() => setViewMode('grid')}>
+                  <IconLayoutGrid size={14} />
+                </ActionIcon>
+                <ActionIcon size="sm" variant={viewMode === 'list' ? 'filled' : 'subtle'} color="indigo"
+                  onClick={() => setViewMode('list')}>
+                  <IconList size={14} />
+                </ActionIcon>
               </div>
-            ) : (
-              <div className="pos2-grid">
-                {filteredProducts?.map((p: any) => {
-                  const stock = parseInt(p.total_stock) || 0
-                  const outOfStock = stock <= 0
-                  const inCart = cart.find(c => c.productId === p.id)
-                  // Get the first attribute group value for this product (used as category)
-                  const firstAttrVal = firstAttrGroup
-                    ? (p.attributes || []).find((a: any) => a.groupId === firstAttrGroup.id)
-                    : null
-                  const matchedCat = firstAttrVal
-                    ? attrCategoryValues.find((c: any) => c.id === firstAttrVal.valueId)
-                    : null
-                  const pal = matchedCat?.pal || CAT_PALETTE[0]
-                  const catName = matchedCat?.name || ''
-                  const initial = p.name?.charAt(0)?.toUpperCase() || '?'
-                  const productImgUrl = p.image_url ? `${posBackendBase}${p.image_url}` : null
+            </div>
+          </div>
 
-                  return (
-                    <div key={p.id}
-                      className={`pos2-card ${outOfStock ? 'disabled' : ''} ${inCart ? 'in-cart' : ''}`}
-                      onClick={() => !outOfStock && addToCart(p)}>
-                      <div className="pos2-card-img" style={{ background: productImgUrl ? 'transparent' : pal.bg }}>
-                        {productImgUrl ? (
-                          <img src={productImgUrl} alt={p.name}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} />
-                        ) : (
-                          <span className="pos2-card-initial" style={{ color: pal.color }}>{initial}</span>
-                        )}
-                        {inCart && <span className="pos2-card-badge">{inCart.quantity}</span>}
-                        {outOfStock && <span className="pos2-card-oos">หมด</span>}
-                      </div>
-                      <div className="pos2-card-info">
-                        <div className="pos2-card-name">{p.name}</div>
-                        <div className="pos2-card-bottom">
-                          <span className="pos2-card-price">฿{fmt(getCustomerPrice(p))}</span>
-                          {catName && <span className="pos2-card-cat" style={{ color: pal.color, background: pal.light }}>{catName}</span>}
-                        </div>
-                      </div>
+          {/* Main content area with optional sidebar */}
+          <div className="pos2-content-area">
+            {/* Category Sidebar */}
+            {showCategorySidebar && quickTab === 'all' && (
+              <div className="pos2-sidebar">
+                <ScrollArea style={{ height: '100%' }} type="auto" scrollbarSize={4}>
+                  {/* First attr group as main categories */}
+                  <UnstyledButton className={`pos2-sidebar-item ${activeCategory === 'all' ? 'active' : ''}`}
+                    onClick={() => setActiveCategory('all')}>
+                    <IconCategory size={16} />
+                    <span>ทั้งหมด</span>
+                    {productsData?.pages?.[0]?.pagination?.total != null && (
+                      <Badge size="xs" variant="light" color="gray" ml="auto">{productsData.pages[0].pagination.total}</Badge>
+                    )}
+                  </UnstyledButton>
+                  {attrCategoryValues.map((cat: any) => (
+                    <UnstyledButton key={cat.id}
+                      className={`pos2-sidebar-item ${activeCategory === String(cat.id) ? 'active' : ''}`}
+                      onClick={() => setActiveCategory(activeCategory === String(cat.id) ? 'all' : String(cat.id))}>
+                      <div className="pos2-sidebar-dot" style={{ background: cat.pal.color }} />
+                      <span>{cat.name}</span>
+                    </UnstyledButton>
+                  ))}
+
+                  {/* Additional attribute filters */}
+                  {(attributeGroups || []).length > 1 && (
+                    <div className="pos2-sidebar-filters">
+                      {(attributeGroups || []).slice(1).map((g: any) => (
+                        <Select key={g.id}
+                          size="xs"
+                          label={g.name}
+                          placeholder="ทั้งหมด"
+                          data={(g.values || []).map((v: any) => ({ value: String(v.id), label: v.value }))}
+                          value={posAttrFilters[g.id] || null}
+                          onChange={(val) => setPosAttrFilters(prev => ({ ...prev, [g.id]: val }))}
+                          clearable
+                          styles={{ label: { fontSize: 11, fontWeight: 600, marginBottom: 2 } }}
+                        />
+                      ))}
+                      {activeFilterCount > 0 && (
+                        <Button size="xs" variant="subtle" color="gray" fullWidth mt={4}
+                          onClick={() => { setActiveCategory('all'); setPosAttrFilters({}) }}
+                          leftSection={<IconX size={12} />}>
+                          ล้างตัวกรอง
+                        </Button>
+                      )}
                     </div>
-                  )
-                })}
+                  )}
+                </ScrollArea>
               </div>
             )}
 
-            {/* === ค่าบริการ (แยกส่วน) === */}
-            <div className="pos2-service-section">
-              <div className="pos2-service-header">
-                <IconTool size={18} color="#0d9488" />
-                <span>ค่าแรง / ค่าบริการ</span>
-              </div>
-              <div className="pos2-service-card" onClick={() => setShowServicePopover(true)}>
-                <div className="pos2-service-icon">
-                  <IconPlus size={22} />
+            {/* Product Grid / List + Service Section */}
+            <div className="pos2-grid-area" ref={gridAreaRef}>
+              {displayLoading ? (
+                <div className="pos2-loading"><Loader size="md" color="indigo" /></div>
+              ) : displayProducts?.length === 0 ? (
+                <div className="pos2-empty">
+                  {quickTab === 'favorites' ? (
+                    <>
+                      <IconHeart size={48} stroke={1.2} color="#ccc" />
+                      <Text c="dimmed" fw={500} mt={8}>ยังไม่มีรายการโปรด</Text>
+                      <Text c="dimmed" size="xs">กดไอคอน ♥ บนสินค้าเพื่อเพิ่ม</Text>
+                    </>
+                  ) : quickTab === 'recent' ? (
+                    <>
+                      <IconHistory size={48} stroke={1.2} color="#ccc" />
+                      <Text c="dimmed" fw={500} mt={8}>ยังไม่มีรายการขายล่าสุด</Text>
+                    </>
+                  ) : quickTab === 'best-sellers' ? (
+                    <>
+                      <IconFlame size={48} stroke={1.2} color="#ccc" />
+                      <Text c="dimmed" fw={500} mt={8}>ยังไม่มีข้อมูลสินค้าขายดี</Text>
+                    </>
+                  ) : (
+                    <>
+                      <IconSearch size={48} stroke={1.2} color="#ccc" />
+                      <Text c="dimmed" fw={500} mt={8}>ไม่พบสินค้า</Text>
+                    </>
+                  )}
                 </div>
-                <div className="pos2-service-text">
-                  <div className="pos2-service-title">เพิ่มค่าแรง / ค่าบริการ</div>
-                  <div className="pos2-service-desc">เช่น ค่าติดตั้ง, ค่าซ่อม, ค่าขนส่ง</div>
+              ) : viewMode === 'list' ? (
+                <div className="pos2-list">
+                  {displayProducts.map(renderProductCard)}
+                </div>
+              ) : (
+                <div className="pos2-grid">
+                  {displayProducts.map(renderProductCard)}
+                </div>
+              )}
+
+              {/* Infinite scroll loading */}
+              {quickTab === 'all' && isFetchingNextPage && (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '16px 0' }}>
+                  <Loader size="sm" color="indigo" />
+                </div>
+              )}
+
+              {/* Total count */}
+              {quickTab === 'all' && productsData?.pages?.[0]?.pagination && !isLoading && (
+                <div style={{ textAlign: 'center', padding: '8px 0 4px', fontSize: 12, color: 'var(--app-text-muted)' }}>
+                  แสดง {allProducts.length} / {productsData.pages[0].pagination.total} รายการ
+                </div>
+              )}
+
+              {/* Service Section */}
+              <div className="pos2-service-section">
+                <div className="pos2-service-header">
+                  <IconTool size={18} color="#0d9488" />
+                  <span>ค่าแรง / ค่าบริการ</span>
+                </div>
+                <div className="pos2-service-card" onClick={() => setShowServicePopover(true)}>
+                  <div className="pos2-service-icon">
+                    <IconPlus size={22} />
+                  </div>
+                  <div className="pos2-service-text">
+                    <div className="pos2-service-title">เพิ่มค่าแรง / ค่าบริการ</div>
+                    <div className="pos2-service-desc">เช่น ค่าติดตั้ง, ค่าซ่อม, ค่าขนส่ง</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -669,7 +885,6 @@ export default function POSPage() {
                 const lineTotal = item.unitPrice * item.quantity - (item.discount || 0)
                 return (
                   <div key={item.productId} className={`pos2-ci ${item.isService ? 'service' : ''}`}>
-                    {/* Row 1: Name + unit price + delete */}
                     <div className="pos2-ci-row1">
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div className="pos2-ci-name">
@@ -682,7 +897,6 @@ export default function POSPage() {
                         <IconTrash size={13} />
                       </ActionIcon>
                     </div>
-                    {/* Row 2: Qty controls + discount input + line total */}
                     <div className="pos2-ci-row2">
                       <div className="pos2-ci-mid">
                         <ActionIcon size={26} variant="light" radius="xl" onClick={() => updateQty(item.productId, item.quantity - 1)}><IconMinus size={12} /></ActionIcon>
@@ -696,7 +910,7 @@ export default function POSPage() {
                           onChange={(v) => updateDiscount(item.productId, Number(v) || 0)}
                           styles={{ input: { padding: '2px 6px', fontSize: 12, fontWeight: 600, textAlign: 'center',
                             borderColor: (() => {
-                              const prod = (products || []).find((p: any) => p.id === item.productId)
+                              const prod = displayProducts.find((p: any) => p.id === item.productId)
                               const minP = prod ? parseFloat(prod.min_selling_price) || 0 : 0
                               if (minP > 0) {
                                 const effPrice = item.unitPrice - (item.discount || 0) / item.quantity
@@ -706,10 +920,9 @@ export default function POSPage() {
                             })()
                           } }} />
                       </div>
-                      {/* Inline min-price warning */}
                       {(() => {
                         if (item.isService) return null
-                        const prod = (products || []).find((p: any) => p.id === item.productId)
+                        const prod = displayProducts.find((p: any) => p.id === item.productId)
                         const minP = prod ? parseFloat(prod.min_selling_price) || 0 : 0
                         if (minP <= 0) return null
                         const effPrice = item.unitPrice - (item.discount || 0) / item.quantity
@@ -735,7 +948,6 @@ export default function POSPage() {
 
           {/* Footer */}
           <div className="pos2-cart-foot">
-            {/* Bill discount */}
             {cart.length > 0 && (
               <div className="pos2-bill-disc">
                 <Text size="xs" fw={600} c="red.7">ส่วนลดทั้งบิล</Text>
@@ -754,7 +966,6 @@ export default function POSPage() {
               </div>
             )}
 
-            {/* Totals */}
             <div className="pos2-totals">
               <div className="pos2-tr"><span>ยอดรวม ({cart.length} รายการ)</span><span>฿{fmt(itemSubtotal)}</span></div>
               {(itemDiscountTotal + billDiscountAmount) > 0 && <div className="pos2-tr disc"><span>ส่วนลด</span><span>-฿{fmt(itemDiscountTotal + billDiscountAmount)}</span></div>}
@@ -795,7 +1006,6 @@ export default function POSPage() {
             <ActionIcon variant="subtle" size="lg" onClick={() => setShowPayment(false)}><IconX size={20} /></ActionIcon>
           </div>
           <div className="pos2-pay-grid">
-            {/* Left: amount */}
             <div className="pos2-pay-amount">
               <div className="pos2-pay-amount-card">
                 <Text size="sm" style={{ color: 'rgba(255,255,255,0.6)' }}>ยอดชำระ</Text>
@@ -808,11 +1018,9 @@ export default function POSPage() {
                 </div>
               )}
             </div>
-            {/* Right: methods */}
             <div>
               <Text fw={600} size="sm" mb="sm">ช่องทางชำระเงิน</Text>
               {walletChannels.length > 0 ? (
-                /* === Wallet Channels from /wallet === */
                 <SimpleGrid cols={2} spacing="sm">
                   {walletChannels.map((ch: any) => {
                     const info = CHANNEL_TYPE_INFO[ch.type] || CHANNEL_TYPE_INFO.other
@@ -836,7 +1044,6 @@ export default function POSPage() {
                   })}
                 </SimpleGrid>
               ) : (
-                /* === Fallback: hardcoded methods === */
                 <SimpleGrid cols={2} spacing="sm">
                   {[
                     { value: 'cash', label: 'เงินสด', icon: IconCash, color: '#059669' },
@@ -883,7 +1090,7 @@ export default function POSPage() {
         </div>
       </Modal>
 
-      {/* ======== MIN PRICE OVERRIDE MODAL (owner/admin only) ======== */}
+      {/* ======== MIN PRICE OVERRIDE MODAL ======== */}
       <Modal
         opened={!!overridePending}
         onClose={() => setOverridePending(null)}
@@ -892,7 +1099,7 @@ export default function POSPage() {
         overlayProps={{ backgroundOpacity: 0.4, blur: 3 }}>
         {overridePending && (() => {
           const it = cart.find(c => c.productId === overridePending.productId)
-          const prod = (products || []).find((p: any) => p.id === overridePending.productId)
+          const prod = displayProducts.find((p: any) => p.id === overridePending.productId)
           const minP = prod ? parseFloat(prod.min_selling_price) || 0 : 0
           const effPrice = it ? it.unitPrice - overridePending.discount / (it.quantity || 1) : 0
           return (
@@ -968,27 +1175,23 @@ export default function POSPage() {
         </Stack>
       </Modal>
 
-      {/* ======== RECEIPT MODAL (ใบเสร็จอย่างย่อ) ======== */}
+      {/* ======== RECEIPT MODAL ======== */}
       <Modal opened={showReceipt} onClose={() => setShowReceipt(false)} title={null}
         size="sm" centered withCloseButton={false} radius="lg"
         overlayProps={{ backgroundOpacity: 0.45, blur: 4 }}>
         {lastReceipt && (
           <div style={{ padding: 4 }}>
-            {/* Thermal-style receipt preview */}
             <div style={{ background: '#fff', border: '1px dashed #ccc', borderRadius: 8, padding: '16px 14px', fontFamily: "'Sarabun', sans-serif", color: '#222', fontSize: 13 }}>
-              {/* Header */}
               <div style={{ textAlign: 'center', borderBottom: '2px dashed #999', paddingBottom: 8, marginBottom: 8 }}>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{lastReceipt.companyName}</div>
                 <div style={{ fontSize: 11, color: '#888' }}>ใบเสร็จอย่างย่อ / Simplified Receipt</div>
               </div>
-              {/* Info */}
               <div style={{ fontSize: 12, marginBottom: 8, paddingBottom: 6, borderBottom: '1px dashed #ccc' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>เลขที่:</span><span style={{ fontWeight: 600 }}>{lastReceipt.invoiceNumber}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>วันที่:</span><span>{new Date(lastReceipt.soldAt).toLocaleDateString('th-TH',{year:'numeric',month:'short',day:'numeric'})} {new Date(lastReceipt.soldAt).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'})}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>แคชเชียร์:</span><span>{lastReceipt.cashierName}</span></div>
                 {lastReceipt.customerName && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>ลูกค้า:</span><span>{lastReceipt.customerName}</span></div>}
               </div>
-              {/* Items - compact */}
               <div style={{ marginBottom: 8 }}>
                 {lastReceipt.items?.map((item: any, i: number) => {
                   const lineTotal = item.unitPrice * item.quantity - (item.discount || 0)
@@ -1000,14 +1203,12 @@ export default function POSPage() {
                   )
                 })}
               </div>
-              {/* Totals */}
               <div style={{ borderTop: '2px dashed #999', paddingTop: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>ยอดรวม</span><span>฿{fmt(lastReceipt.totalAmount)}</span></div>
                 {lastReceipt.discountAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#dc2626' }}><span>ส่วนลด</span><span>-฿{fmt(lastReceipt.discountAmount)}</span></div>}
                 {lastReceipt.vatEnabled && lastReceipt.vatAmount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>VAT</span><span>฿{fmt(lastReceipt.vatAmount)}</span></div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, borderTop: '1px solid #333', marginTop: 4, paddingTop: 4 }}><span>ยอดสุทธิ</span><span>฿{fmt(lastReceipt.netAmount)}</span></div>
               </div>
-              {/* Payment */}
               <div style={{ borderTop: '1px dashed #ccc', paddingTop: 6, marginTop: 6, fontSize: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>ชำระโดย</span><span>{lastReceipt.paymentChannelName || {cash:'เงินสด',transfer:'โอนเงิน',credit_card:'บัตรเครดิต',qr_code:'QR Code'}[lastReceipt.paymentMethod as string] || lastReceipt.paymentMethod}</span></div>
                 {lastReceipt.paymentMethod==='cash' && lastReceipt.receivedAmount > 0 && (<>
@@ -1015,7 +1216,6 @@ export default function POSPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}><span>เงินทอน</span><span>฿{fmt(lastReceipt.changeAmount)}</span></div>
                 </>)}
               </div>
-              {/* Loyalty Points */}
               {(lastReceipt.pointsEarned > 0 || lastReceipt.loyaltyDiscount > 0) && (
                 <div style={{ borderTop: '1px dashed #ccc', paddingTop: 6, marginTop: 6, fontSize: 12, textAlign: 'center' }}>
                   {lastReceipt.loyaltyDiscount > 0 && (
@@ -1026,14 +1226,12 @@ export default function POSPage() {
                   )}
                 </div>
               )}
-              {/* Footer */}
               <div style={{ textAlign: 'center', borderTop: '2px dashed #999', paddingTop: 8, marginTop: 8, fontSize: 11, color: '#888' }}>
                 <div style={{ fontWeight: 700, color: '#333' }}>ขอบคุณที่ใช้บริการ</div>
                 <div>Thank you & See you again!</div>
               </div>
             </div>
 
-            {/* Action buttons */}
             <Group grow mt="md" gap="sm">
               <Button variant="light" size="md" onClick={() => setShowReceipt(false)}>ปิด</Button>
               <Button leftSection={<IconPrinter size={16} />} color="indigo" size="md"
@@ -1046,7 +1244,6 @@ export default function POSPage() {
                 }}>พิมพ์ใบเสร็จย่อ</Button>
             </Group>
 
-            {/* Create formal document buttons */}
             <div style={{ borderTop: '1px solid var(--app-border-light)', marginTop: 12, paddingTop: 12 }}>
               <Text size="xs" c="dimmed" mb={6} fw={600}>ออกเอกสารเพิ่มเติม</Text>
               <Group grow gap="sm">

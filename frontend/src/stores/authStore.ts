@@ -14,6 +14,7 @@ interface User {
   username: string
   fullName: string
   nickName?: string
+  isSuperAdmin?: boolean
 }
 
 interface AuthState {

@@ -41,7 +41,7 @@ router.post('/login', validate(loginSchema), async (req, res) => {
     const { username, password } = req.body
 
     const users = await executeQuery(
-      'SELECT id, username, password_hash, full_name, nick_name FROM users WHERE username = ? AND is_active = TRUE',
+      'SELECT id, username, password_hash, full_name, nick_name, is_superadmin FROM users WHERE username = ? AND is_active = TRUE',
       [username]
     )
 
@@ -68,10 +68,13 @@ router.post('/login', validate(loginSchema), async (req, res) => {
     // Pick default company or first one
     const defaultCompany = companies.find(c => c.is_default) || companies[0]
 
+    const isSuperAdmin = !!user.is_superadmin
+
     const tokenPayload = {
       id: user.id,
       username: user.username,
       fullName: user.full_name,
+      isSuperAdmin,
       companyId: defaultCompany ? defaultCompany.company_id : null,
       role: defaultCompany ? defaultCompany.role : null,
     }
@@ -87,6 +90,7 @@ router.post('/login', validate(loginSchema), async (req, res) => {
         username: user.username,
         fullName: user.full_name,
         nickName: user.nick_name,
+        isSuperAdmin,
       },
       companies,
       activeCompany: defaultCompany || null,
@@ -116,10 +120,16 @@ router.post('/switch-company', auth, async (req, res) => {
     }
 
     const company = rows[0]
+
+    // Carry isSuperAdmin forward
+    const [userData] = await executeQuery('SELECT is_superadmin FROM users WHERE id = ?', [req.user.id])
+    const isSuperAdmin = !!(userData?.is_superadmin)
+
     const tokenPayload = {
       id: req.user.id,
       username: req.user.username,
       fullName: req.user.fullName,
+      isSuperAdmin,
       companyId,
       role: company.role,
     }

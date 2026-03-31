@@ -37,6 +37,7 @@ const COLUMN_MAP = {
   'ราคาขาย*': 'sellingPrice', 'ราคาขาย': 'sellingPrice',
   'ราคาขายขั้นต่ำ': 'minSellingPrice',
   'สต๊อกขั้นต่ำ': 'minStock',
+  'จำนวนรับเข้า': 'quantity',
 }
 
 function normalizeRow(rawRow) {
@@ -78,6 +79,7 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
     let imported = 0
     let updated = 0
     let skipped = 0
+    let stockReceived = 0
 
     for (let i = 0; i < rawData.length; i++) {
       const rowNum = i + 2 // Excel row (header is row 1)
@@ -108,6 +110,8 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
       const minSellingPrice = parseFloat(row.minSellingPrice) || 0
       const minStock = parseInt(row.minStock) || 0
 
+      const quantity = parseInt(row.quantity) || 0
+
       try {
         // Check if product with this SKU already exists for this company
         const existing = await executeQuery(
@@ -115,7 +119,9 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
           [sku, req.user.companyId]
         )
 
+        let productId
         if (existing.length > 0) {
+          productId = existing[0].id
           // Update existing product
           await executeQuery(
             `UPDATE products SET barcode = COALESCE(?, barcode), name = ?, unit = ?,
@@ -123,17 +129,44 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
              is_active = TRUE
              WHERE id = ? AND company_id = ?`,
             [barcode, name, unit, costPrice, sellingPrice, minSellingPrice, minStock,
-             existing[0].id, req.user.companyId]
+             productId, req.user.companyId]
           )
           updated++
         } else {
           // Insert new product
-          await executeQuery(
+          const insertResult = await executeQuery(
             `INSERT INTO products (company_id, sku, barcode, name, unit, cost_price, selling_price, min_selling_price, min_stock)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [req.user.companyId, sku, barcode, name, unit, costPrice, sellingPrice, minSellingPrice, minStock]
           )
+          productId = insertResult.insertId
           imported++
+        }
+
+        // Receive stock if quantity > 0
+        if (quantity > 0 && productId) {
+          // Find default warehouse for this company
+          const warehouses = await executeQuery(
+            'SELECT id FROM warehouses WHERE company_id = ? AND is_active = TRUE ORDER BY id ASC LIMIT 1',
+            [req.user.companyId]
+          )
+          if (warehouses.length > 0) {
+            const warehouseId = warehouses[0].id
+            // Create stock lot
+            const lotResult = await executeQuery(
+              `INSERT INTO stock_lots (product_id, warehouse_id, quantity_remaining, cost_per_unit)
+               VALUES (?, ?, ?, ?)`,
+              [productId, warehouseId, quantity, costPrice]
+            )
+            const lotId = lotResult.insertId
+            // Create stock transaction
+            await executeQuery(
+              `INSERT INTO stock_transactions (product_id, warehouse_id, type, quantity, cost_per_unit, reference_type, related_lot_id, note, created_by)
+               VALUES (?, ?, 'IN', ?, ?, 'IMPORT', ?, ?, ?)`,
+              [productId, warehouseId, quantity, costPrice, lotId, 'นำเข้าจาก Excel', req.user.id]
+            )
+            stockReceived++
+          }
         }
       } catch (dbError) {
         errors.push(`แถว ${rowNum} (SKU: ${sku}): ${dbError.message}`)
@@ -148,8 +181,8 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
       action: 'IMPORT',
       entityType: 'product',
       entityId: null,
-      description: `นำเข้าสินค้าจาก Excel: เพิ่มใหม่ ${imported}, อัพเดต ${updated}, ข้าม ${skipped}`,
-      newValues: { imported, updated, skipped, totalRows: rawData.length },
+      description: `นำเข้าสินค้าจาก Excel: เพิ่มใหม่ ${imported}, อัพเดต ${updated}, ข้าม ${skipped}, รับเข้าสต๊อก ${stockReceived}`,
+      newValues: { imported, updated, skipped, stockReceived, totalRows: rawData.length },
       req,
     })
 
@@ -158,6 +191,7 @@ router.post('/products', roleCheck('owner', 'admin', 'manager'), uploadMemory.si
       imported,
       updated,
       skipped,
+      stockReceived,
       total: rawData.length,
       errors,
     })

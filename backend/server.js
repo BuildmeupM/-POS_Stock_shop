@@ -88,7 +88,10 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }))
 
 // === Static Files (uploads) ===
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads')
-app.use('/uploads', express.static(UPLOAD_DIR))
+app.use('/uploads', express.static(UPLOAD_DIR, {
+  maxAge: '7d',      // cache images 7 days — filenames include timestamp so safe
+  immutable: true,    // tell browser: if cached, don't even revalidate
+}))
 
 // === Request Logger (structured) ===
 app.use((req, res, next) => {
@@ -135,6 +138,9 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/auth', require('./routes/auth/auth'))
 app.use('/api/users', require('./routes/auth/users'))
 
+// Routes — admin (super admin only)
+app.use('/api/admin', require('./routes/admin/admin'))
+
 // Routes — company
 app.use('/api/companies', require('./routes/company/companies'))
 
@@ -145,6 +151,7 @@ app.use('/api/sales-doc', require('./routes/sales-doc/salesDocuments'))
 app.use('/api/sales', require('./routes/pos/sales'))
 app.use('/api/credit-notes', require('./routes/pos/creditNotes'))
 app.use('/api/returns', require('./routes/pos/returns'))
+app.use('/api/pos-products', require('./routes/pos/posProducts'))
 
 // Routes — inventory (สต๊อก & สินค้า)
 app.use('/api/products', require('./routes/inventory/products'))

@@ -297,14 +297,72 @@ router.get('/categories/all', async (req, res) => {
 // PRODUCTS (/:id routes after specific routes)
 // ====================================================================
 
-// GET /api/products
+// GET /api/products/counts — lightweight counts for sidebar + stats
+// Returns attribute value counts + stock status counts without loading full product data
+router.get('/counts', async (req, res) => {
+  try {
+    const companyId = req.user.companyId
+
+    // 1. Attribute value counts
+    const attrCounts = await executeQuery(
+      `SELECT pa.attribute_value_id as valueId, COUNT(DISTINCT pa.product_id) as count
+       FROM product_attributes pa
+       JOIN products p ON pa.product_id = p.id
+       WHERE p.company_id = ? AND p.is_active = TRUE
+       GROUP BY pa.attribute_value_id`,
+      [companyId]
+    )
+
+    // 2. Stock status counts (single query, no per-row subquery)
+    const [statusCounts] = await executeQuery(
+      `SELECT
+         COUNT(*) as total,
+         SUM(p.is_active = TRUE) as active,
+         SUM(CASE WHEN COALESCE(sa.total_stock, 0) > 0
+                   AND COALESCE(sa.total_stock, 0) <= p.min_stock THEN 1 ELSE 0 END) as low,
+         SUM(CASE WHEN COALESCE(sa.total_stock, 0) <= 0 THEN 1 ELSE 0 END) as out_of_stock
+       FROM products p
+       LEFT JOIN (
+         SELECT sl.product_id, SUM(sl.quantity_remaining) as total_stock
+         FROM stock_lots sl
+         JOIN warehouses w ON sl.warehouse_id = w.id AND w.company_id = ?
+         GROUP BY sl.product_id
+       ) sa ON sa.product_id = p.id
+       WHERE p.company_id = ? AND p.is_active = TRUE`,
+      [companyId, companyId]
+    )
+
+    const valueCounts = {}
+    for (const row of attrCounts) {
+      valueCounts[row.valueId] = row.count
+    }
+
+    res.json({
+      valueCounts,
+      stats: {
+        total: Number(statusCounts.total) || 0,
+        active: Number(statusCounts.active) || 0,
+        low: Number(statusCounts.low) || 0,
+        out: Number(statusCounts.out_of_stock) || 0,
+      },
+    })
+  } catch (error) {
+    console.error('Get product counts error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// GET /api/products — server-side pagination + attribute filter + stock filter
 router.get('/', async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 0
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200)
-    const offset = page > 0 ? (page - 1) * limit : 0
+    // If page param is sent: return { data, pagination }
+    // If NOT sent: return flat array (backward compatible for POS, Orders, etc.)
+    const usePagination = req.query.page !== undefined
+    const page = Math.max(1, parseInt(req.query.page) || 1)
+    const limit = Math.min(parseInt(req.query.limit) || (usePagination ? 20 : 1000), 1000)
+    const offset = (page - 1) * limit
 
-    const { search, active } = req.query
+    const { search, active, stockStatus, attrValueIds } = req.query
     let whereClause = 'WHERE p.company_id = ?'
     const baseParams = [req.user.companyId]
 
@@ -317,11 +375,20 @@ router.get('/', async (req, res) => {
         ))`
       baseParams.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
     }
-    // Default to showing only active products; pass active=false to include deleted
+
     const showActive = active === undefined ? true : active === 'true'
     if (active !== 'all') {
       whereClause += ' AND p.is_active = ?'
       baseParams.push(showActive)
+    }
+
+    // Attribute filter: comma-separated valueIds (AND logic — must match ALL)
+    const attrIds = attrValueIds ? String(attrValueIds).split(',').map(Number).filter(Boolean) : []
+    if (attrIds.length > 0) {
+      for (const vid of attrIds) {
+        whereClause += ` AND EXISTS (SELECT 1 FROM product_attributes pa_f WHERE pa_f.product_id = p.id AND pa_f.attribute_value_id = ?)`
+        baseParams.push(vid)
+      }
     }
 
     const fetchAttributes = (products) => {
@@ -348,36 +415,64 @@ router.get('/', async (req, res) => {
       })
     }
 
-    if (page > 0) {
-      const [countResult] = await executeQuery(
-        `SELECT COUNT(*) as total FROM products p ${whereClause}`, baseParams
-      )
-      const total = countResult.total
+    // Pre-aggregate stock totals with LEFT JOIN
+    const stockJoin = `LEFT JOIN (
+        SELECT sl.product_id, SUM(sl.quantity_remaining) as total_stock
+        FROM stock_lots sl
+        JOIN warehouses w ON sl.warehouse_id = w.id AND w.company_id = ?
+        GROUP BY sl.product_id
+      ) stock_agg ON stock_agg.product_id = p.id`
 
-      const products = await executeQuery(
-        `SELECT p.*,
-          COALESCE((SELECT SUM(sl.quantity_remaining) FROM stock_lots sl
-                    JOIN warehouses w ON sl.warehouse_id = w.id
-                    WHERE sl.product_id = p.id AND w.company_id = p.company_id), 0) as total_stock
-        FROM products p
-        ${whereClause} ORDER BY p.name ASC LIMIT ? OFFSET ?`,
-        [...baseParams, limit, offset]
-      )
+    // Stock status filter (low / out) requires HAVING on the joined total
+    let havingClause = ''
+    if (stockStatus === 'low') {
+      havingClause = 'HAVING total_stock > 0 AND total_stock <= p.min_stock'
+    } else if (stockStatus === 'out') {
+      havingClause = 'HAVING total_stock <= 0'
+    }
 
-      await fetchAttributes(products)
-      res.json({ data: products, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } })
+    // For stock filter, wrap in subquery so HAVING works with pagination
+    const needsStockFilter = stockStatus === 'low' || stockStatus === 'out'
+
+    // Count total matching rows
+    let countQuery, countParams
+    if (needsStockFilter) {
+      countQuery = `SELECT COUNT(*) as total FROM (
+        SELECT p.id, COALESCE(stock_agg.total_stock, 0) as total_stock, p.min_stock
+        FROM products p ${stockJoin} ${whereClause} GROUP BY p.id ${havingClause}
+      ) filtered`
+      countParams = [req.user.companyId, ...baseParams]
     } else {
-      const products = await executeQuery(
-        `SELECT p.*,
-          COALESCE((SELECT SUM(sl.quantity_remaining) FROM stock_lots sl
-                    JOIN warehouses w ON sl.warehouse_id = w.id
-                    WHERE sl.product_id = p.id AND w.company_id = p.company_id), 0) as total_stock
-        FROM products p
-        ${whereClause} ORDER BY p.name ASC LIMIT 500`,
-        baseParams
-      )
+      countQuery = `SELECT COUNT(*) as total FROM products p ${whereClause}`
+      countParams = baseParams
+    }
+    const [countResult] = await executeQuery(countQuery, countParams)
+    const total = countResult.total
 
-      await fetchAttributes(products)
+    // Fetch paginated products
+    let dataQuery, dataParams
+    if (needsStockFilter) {
+      dataQuery = `SELECT sub.* FROM (
+        SELECT p.*, COALESCE(stock_agg.total_stock, 0) as total_stock
+        FROM products p ${stockJoin} ${whereClause} GROUP BY p.id ${havingClause}
+      ) sub ORDER BY sub.name ASC LIMIT ? OFFSET ?`
+      dataParams = [req.user.companyId, ...baseParams, limit, offset]
+    } else {
+      dataQuery = `SELECT p.*, COALESCE(stock_agg.total_stock, 0) as total_stock
+        FROM products p ${stockJoin} ${whereClause} ORDER BY p.name ASC LIMIT ? OFFSET ?`
+      dataParams = [req.user.companyId, ...baseParams, limit, offset]
+    }
+    const products = await executeQuery(dataQuery, dataParams)
+
+    await fetchAttributes(products)
+
+    if (usePagination) {
+      res.json({
+        data: products,
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      })
+    } else {
+      // Backward compatible: return flat array for POS, Orders, etc.
       res.json(products)
     }
   } catch (error) {

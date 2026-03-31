@@ -31,6 +31,7 @@ export async function uploadProductsExcel(file: File) {
     imported: number
     updated: number
     skipped: number
+    stockReceived: number
     total: number
     errors: string[]
   }

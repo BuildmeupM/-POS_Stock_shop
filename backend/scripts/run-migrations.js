@@ -215,7 +215,25 @@ async function run() {
     ]
   })
 
-  // === 9. fix account type for revenue accounts ===
+  // === 9. pos_favorite_products ===
+  migrations.push({
+    name: 'pos_favorite_products',
+    stmts: [
+      `CREATE TABLE IF NOT EXISTS pos_favorite_products (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        company_id ${companyIdType} NOT NULL,
+        product_id INT NOT NULL,
+        sort_order INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_user_product (user_id, company_id, product_id),
+        INDEX idx_pos_fav_user (user_id, company_id),
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      )`,
+    ]
+  })
+
+  // === 10. fix account type for revenue accounts ===
   migrations.push({
     name: 'fix_account_types',
     stmts: [
@@ -244,6 +262,14 @@ async function run() {
        SELECT c.id, '2150', 'เจ้าหนี้ผู้ฝากขาย', 'liability'
        FROM companies c
        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.company_id = c.id AND a.account_code = '2150')`,
+    ]
+  })
+
+  // === 11. is_superadmin flag on users ===
+  migrations.push({
+    name: 'users_is_superadmin',
+    stmts: [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_superadmin BOOLEAN NOT NULL DEFAULT FALSE`,
     ]
   })
 

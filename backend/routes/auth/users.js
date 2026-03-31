@@ -247,6 +247,38 @@ router.put('/:id/toggle-active', roleCheck('owner', 'admin'), async (req, res) =
   }
 })
 
+// PUT /api/users/:id/reset-password — reset a user's password
+router.put('/:id/reset-password', roleCheck('owner', 'admin'), async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id)
+    const { newPassword } = req.body
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ message: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' })
+    }
+
+    // Verify target user is in this company
+    const userCompany = await executeQuery(
+      'SELECT role FROM user_companies WHERE user_id = ? AND company_id = ?',
+      [userId, req.user.companyId]
+    )
+    if (userCompany.length === 0) {
+      return res.status(404).json({ message: 'ไม่พบผู้ใช้งานในบริษัทนี้' })
+    }
+    if (userCompany[0].role === 'owner' && req.user.companyRole !== 'owner') {
+      return res.status(403).json({ message: 'ไม่สามารถรีเซ็ตรหัสผ่านเจ้าของได้' })
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10)
+    await executeQuery('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId])
+
+    res.json({ message: 'รีเซ็ตรหัสผ่านสำเร็จ' })
+  } catch (error) {
+    console.error('Reset password error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
 // DELETE /api/users/:id — remove user from the current company
 router.delete('/:id', roleCheck('owner'), async (req, res) => {
   try {

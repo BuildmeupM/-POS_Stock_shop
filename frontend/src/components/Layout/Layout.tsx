@@ -177,6 +177,16 @@ export default function Layout() {
       const res = await api.post('/auth/switch-company', { companyId })
       const { token: newToken, activeCompany: newCompany, companies: newCompanies } = res.data
       switchCompany(newCompany, newToken, newCompanies)
+      // Zustand v5 persist writes to sessionStorage async (microtask),
+      // so we must write manually before reload to avoid race condition
+      const stored = JSON.parse(sessionStorage.getItem('auth-storage') || '{}')
+      stored.state = {
+        ...stored.state,
+        token: newToken,
+        activeCompany: newCompany,
+        companies: newCompanies || stored.state?.companies,
+      }
+      sessionStorage.setItem('auth-storage', JSON.stringify(stored))
       window.location.reload()
     } catch (err) {
       console.error('Switch company error:', err)

@@ -34,12 +34,19 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), validate(cre
     // Generate invoice number
     const invoiceNumber = await generateDocNumber('INV', companyId, 'sales', 'invoice_number')
 
-    // Get default warehouse
+    // Get default warehouse — required for stock deduction
     const [warehouses] = await connection.execute(
       'SELECT id FROM warehouses WHERE company_id = ? AND is_active = TRUE LIMIT 1',
       [companyId]
     )
     const warehouseId = warehouses[0]?.id
+
+    // Check if any non-service items exist — if so, warehouse is required
+    const hasPhysicalItems = items.some(i => !i.isService && i.productId)
+    if (hasPhysicalItems && !warehouseId) {
+      await connection.rollback()
+      return res.status(400).json({ message: 'ไม่พบคลังสินค้า กรุณาสร้างคลังสินค้าก่อนขาย' })
+    }
 
     let totalAmount = 0
     let totalCostAmount = 0

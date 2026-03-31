@@ -42,7 +42,7 @@ export default function ProductsTab() {
   const [importModal, setImportModal] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importLoading, setImportLoading] = useState(false)
-  const [importResult, setImportResult] = useState<{ imported: number; updated: number; skipped: number; errors: string[] } | null>(null)
+  const [importResult, setImportResult] = useState<{ imported: number; updated: number; skipped: number; stockReceived: number; errors: string[] } | null>(null)
   const [exportLoading, setExportLoading] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [form, setForm] = useState<ProductFormData>(emptyForm)
@@ -388,24 +388,28 @@ export default function ProductsTab() {
         </div>
       </SimpleGrid>
 
-      {/* Search + Actions Bar */}
-      <div className="stock-filter-bar">
-        <TextInput placeholder="ค้นหาสินค้า (ชื่อ, SKU, Barcode)..." leftSection={<IconSearch size={16} />}
-          value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+      {/* Search + Actions Bar — Row 1: search + filters */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <TextInput placeholder="ค้นหา SKU, ชื่อสินค้า, คุณสมบัติ..." leftSection={<IconSearch size={16} />}
+          value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
         <Select placeholder="สถานะสต๊อก" data={[
           { value: 'low', label: '⚠️ ใกล้หมด' },
           { value: 'out', label: '🔴 หมดสต๊อก' },
-        ]} value={stockFilter} onChange={setStockFilter} clearable style={{ minWidth: 150 }} />
+        ]} value={stockFilter} onChange={setStockFilter} clearable style={{ width: 160 }} />
         <Select placeholder="📂 จัดกลุ่มตาม..." data={(attrGroups || []).map((g) => ({ value: String(g.id), label: g.name }))}
           value={groupByAttr} onChange={setGroupByAttr} clearable
-          leftSection={<IconFilter size={14} />} style={{ minWidth: 160 }} />
+          leftSection={<IconFilter size={14} />} style={{ width: 170 }} />
+      </div>
+
+      {/* Actions Bar — Row 2: action buttons */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <Tooltip label="จัดการกลุ่มแอตทริบิวต์">
           <ActionIcon size="lg" variant="light" color="violet" onClick={() => setAttrGroupsModal(true)}>
             <IconSettings size={18} />
           </ActionIcon>
         </Tooltip>
         <Tooltip label="ส่งออก Excel">
-          <Button variant="light" color="green" leftSection={<IconFileSpreadsheet size={16} />}
+          <Button variant="light" color="green" size="sm" leftSection={<IconFileSpreadsheet size={16} />}
             loading={exportLoading}
             onClick={async () => {
               try {
@@ -422,11 +426,12 @@ export default function ProductsTab() {
           </Button>
         </Tooltip>
         <Tooltip label="นำเข้าสินค้าจาก Excel">
-          <Button variant="light" color="orange" leftSection={<IconUpload size={16} />}
+          <Button variant="light" color="orange" size="sm" leftSection={<IconUpload size={16} />}
             onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true) }}>
             นำเข้า Excel
           </Button>
         </Tooltip>
+        <div style={{ flex: 1 }} />
         <Button leftSection={<IconPlus size={16} />} onClick={() => { setForm(emptyForm); setAddModal(true) }}>
           เพิ่มสินค้า
         </Button>
@@ -599,7 +604,7 @@ export default function ProductsTab() {
       <Modal opened={importModal} onClose={() => setImportModal(false)} title="นำเข้าสินค้าจาก Excel" size="md">
         <Stack gap="md">
           <Text size="sm" c="dimmed">
-            อัปโหลดไฟล์ Excel (.xlsx) เพื่อนำเข้าสินค้า หากมี SKU ซ้ำจะอัพเดตข้อมูลเดิม
+            อัปโหลดไฟล์ Excel (.xlsx) เพื่อนำเข้าสินค้าและรับเข้าสต๊อก หากมี SKU ซ้ำจะอัพเดตข้อมูลเดิม กรอกคอลัมน์ "จำนวนรับเข้า" เพื่อเพิ่มสต๊อกอัตโนมัติ
           </Text>
 
           <Button variant="subtle" color="blue" leftSection={<IconDownload size={16} />}
@@ -649,7 +654,7 @@ export default function ProductsTab() {
                   queryClient.invalidateQueries({ queryKey: ['products'] })
                   notifications.show({
                     title: 'นำเข้าสำเร็จ',
-                    message: `เพิ่มใหม่ ${result.imported} | อัพเดต ${result.updated} | ข้าม ${result.skipped}`,
+                    message: `เพิ่มใหม่ ${result.imported} | อัพเดต ${result.updated} | รับเข้าสต๊อก ${result.stockReceived || 0} | ข้าม ${result.skipped}`,
                     color: 'green',
                   })
                 }
@@ -677,6 +682,10 @@ export default function ProductsTab() {
                 <div>
                   <Text size="xs" c="dimmed">อัพเดต</Text>
                   <Text size="lg" fw={700} c="blue">{importResult.updated}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed">รับเข้าสต๊อก</Text>
+                  <Text size="lg" fw={700} c="teal">{importResult.stockReceived || 0}</Text>
                 </div>
                 <div>
                   <Text size="xs" c="dimmed">ข้าม</Text>

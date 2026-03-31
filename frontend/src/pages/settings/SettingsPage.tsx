@@ -11,7 +11,7 @@ import {
   IconUsers, IconUserPlus, IconShieldCheck, IconDotsVertical, IconTrash, IconEdit, IconUserOff,
   IconUserCheck, IconEye, IconPrinter, IconCash, IconSettings, IconInfoCircle, IconTags, IconPlus,
   IconGripVertical, IconCheck, IconX, IconSun, IconMoon, IconDeviceDesktop, IconPalette,
-  IconSearch, IconLink,
+  IconSearch, IconLink, IconCrown, IconChevronRight, IconKey,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
@@ -30,15 +30,16 @@ const ASSIGNABLE_ROLES = Object.entries(ROLE_MAP)
   .map(([value, { label }]) => ({ value, label }))
 
 /* ── Settings Tabs config ── */
-type TabId = 'company' | 'tax' | 'display' | 'theme' | 'products' | 'users' | 'system'
-const TABS: { id: TabId; label: string; icon: any }[] = [
-  { id: 'company',  label: 'ข้อมูลร้านค้า',       icon: IconBuilding },
-  { id: 'tax',      label: 'ตั้งค่าภาษี',          icon: IconReceipt },
-  { id: 'display',  label: 'การแสดงผล',            icon: IconEye },
-  { id: 'theme',    label: 'ธีม',                   icon: IconPalette },
-  { id: 'products', label: 'คุณสมบัติสินค้า',       icon: IconTags },
-  { id: 'users',    label: 'จัดการผู้ใช้งาน',       icon: IconUsers },
-  { id: 'system',   label: 'ข้อมูลระบบ',            icon: IconInfoCircle },
+type TabId = 'company' | 'tax' | 'display' | 'theme' | 'products' | 'users' | 'system' | 'superadmin'
+const TABS: { id: TabId; label: string; icon: any; superAdminOnly?: boolean }[] = [
+  { id: 'company',    label: 'ข้อมูลร้านค้า',       icon: IconBuilding },
+  { id: 'tax',        label: 'ตั้งค่าภาษี',          icon: IconReceipt },
+  { id: 'display',    label: 'การแสดงผล',            icon: IconEye },
+  { id: 'theme',      label: 'ธีม',                   icon: IconPalette },
+  { id: 'products',   label: 'คุณสมบัติสินค้า',       icon: IconTags },
+  { id: 'users',      label: 'จัดการผู้ใช้งาน',       icon: IconUsers },
+  { id: 'system',     label: 'ข้อมูลระบบ',            icon: IconInfoCircle },
+  { id: 'superadmin', label: 'Super Admin',            icon: IconCrown, superAdminOnly: true },
 ]
 
 export default function SettingsPage() {
@@ -166,9 +167,11 @@ export default function SettingsPage() {
   const [addUserOpen, setAddUserOpen] = useState(false)
   const [addExistingOpen, setAddExistingOpen] = useState(false)
   const [editRoleOpen, setEditRoleOpen] = useState(false)
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState<any>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', fullName: '', nickName: '', role: 'staff' })
   const [editRole, setEditRole] = useState('')
+  const [newPassword, setNewPassword] = useState('')
 
   /* ── Add existing user state ── */
   const [searchQuery, setSearchQuery] = useState('')
@@ -254,8 +257,22 @@ export default function SettingsPage() {
     },
   })
 
+  const resetPasswordMutation = useMutation({
+    mutationFn: ({ userId, newPassword }: { userId: number; newPassword: string }) =>
+      api.put(`/users/${userId}/reset-password`, { newPassword }),
+    onSuccess: () => {
+      notifications.show({ title: 'สำเร็จ', message: 'รีเซ็ตรหัสผ่านเรียบร้อยแล้ว', color: 'green' })
+      setResetPasswordOpen(false)
+      setNewPassword('')
+    },
+    onError: (err: any) => {
+      notifications.show({ title: 'เกิดข้อผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถรีเซ็ตรหัสผ่านได้', color: 'red' })
+    },
+  })
+
   if (isLoading) return <Loader style={{ margin: '40px auto', display: 'block' }} />
 
+  const isSuperAdmin = !!currentUser?.isSuperAdmin
   const canManageUsers = ['owner', 'admin', 'manager'].includes(currentRole)
   const canEditUsers = ['owner', 'admin'].includes(currentRole)
 
@@ -281,9 +298,9 @@ export default function SettingsPage() {
       <div className="settings-body">
         {/* ── Sidebar Tabs ── */}
         <div className="settings-tabs">
-          {TABS.map(tab => (
+          {TABS.filter(tab => !tab.superAdminOnly || isSuperAdmin).map(tab => (
             <button key={tab.id}
-              className={`settings-tab ${activeTab === tab.id ? 'active' : ''}`}
+              className={`settings-tab ${activeTab === tab.id ? 'active' : ''} ${tab.superAdminOnly ? 'settings-tab-superadmin' : ''}`}
               onClick={() => setActiveTab(tab.id)}>
               <tab.icon size={18} />
               <span>{tab.label}</span>
@@ -626,6 +643,10 @@ export default function SettingsPage() {
                                           onClick={() => { setSelectedUser(u); setEditRole(u.role); setEditRoleOpen(true) }}>
                                           เปลี่ยนตำแหน่ง
                                         </Menu.Item>
+                                        <Menu.Item leftSection={<IconKey size={14} />}
+                                          onClick={() => { setSelectedUser(u); setNewPassword(''); setResetPasswordOpen(true) }}>
+                                          รีเซ็ตรหัสผ่าน
+                                        </Menu.Item>
                                         <Menu.Item
                                           leftSection={u.is_active ? <IconUserOff size={14} /> : <IconUserCheck size={14} />}
                                           color={u.is_active ? 'orange' : 'green'}
@@ -698,6 +719,9 @@ export default function SettingsPage() {
               </Card>
             </Stack>
           )}
+
+          {/* ========== Tab: Super Admin ========== */}
+          {activeTab === 'superadmin' && isSuperAdmin && <SuperAdminTab />}
 
           {/* ========== Tab: System ========== */}
           {activeTab === 'system' && (
@@ -792,6 +816,31 @@ export default function SettingsPage() {
         </Stack>
       </Modal>
 
+      {/* ── Modal: Reset Password ── */}
+      <Modal opened={resetPasswordOpen} onClose={() => { setResetPasswordOpen(false); setNewPassword('') }}
+        title={`รีเซ็ตรหัสผ่าน — ${selectedUser?.full_name || ''}`} centered size="sm">
+        <Stack gap="md">
+          <div className="settings-info-box">
+            <Text size="xs" c="dimmed">
+              ตั้งรหัสผ่านใหม่ให้ <strong>{selectedUser?.full_name}</strong> (@{selectedUser?.username})
+              ผู้ใช้จะต้องใช้รหัสผ่านใหม่นี้ในการเข้าสู่ระบบครั้งถัดไป
+            </Text>
+          </div>
+          <PasswordInput label="รหัสผ่านใหม่" placeholder="อย่างน้อย 6 ตัวอักษร" required
+            value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+          <Group justify="flex-end">
+            <Button variant="subtle" onClick={() => { setResetPasswordOpen(false); setNewPassword('') }}>ยกเลิก</Button>
+            <Button leftSection={<IconKey size={16} />}
+              color="orange"
+              loading={resetPasswordMutation.isPending}
+              disabled={newPassword.length < 6}
+              onClick={() => selectedUser && resetPasswordMutation.mutate({ userId: selectedUser.id, newPassword })}>
+              รีเซ็ตรหัสผ่าน
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
       {/* ── Modal: Add Existing User to Company ── */}
       <Modal opened={addExistingOpen} onClose={() => { setAddExistingOpen(false); setSearchQuery(''); setSearchResults([]); setSelectedExistingUser(null) }}
         title="เพิ่มผู้ใช้ที่มีอยู่เข้าบริษัท" centered size="md">
@@ -864,6 +913,266 @@ export default function SettingsPage() {
         </Stack>
       </Modal>
     </div>
+  )
+}
+
+/* ====================================================================
+   Super Admin Tab Component
+   ==================================================================== */
+function SuperAdminTab() {
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null)
+  const [companyUsers, setCompanyUsers] = useState<any[]>([])
+  const [loadingUsers, setLoadingUsers] = useState(false)
+
+  const { data: allCompanies = [], isLoading: companiesLoading, refetch: refetchCompanies } = useQuery({
+    queryKey: ['admin-companies'],
+    queryFn: () => api.get('/admin/companies').then(r => r.data),
+  })
+
+  const { data: allUsers = [], isLoading: usersLoading, refetch: refetchUsers } = useQuery({
+    queryKey: ['admin-users'],
+    queryFn: () => api.get('/admin/users').then(r => r.data),
+  })
+
+  const toggleSuperAdminMutation = useMutation({
+    mutationFn: (userId: number) => api.put(`/admin/users/${userId}/superadmin`),
+    onSuccess: (res: any) => {
+      notifications.show({ title: 'สำเร็จ', message: res.data.message, color: 'green' })
+      refetchUsers()
+    },
+    onError: (err: any) => {
+      notifications.show({ title: 'เกิดข้อผิดพลาด', message: err.response?.data?.message || 'ไม่สามารถดำเนินการได้', color: 'red' })
+    },
+  })
+
+  const loadCompanyUsers = async (companyId: string) => {
+    setSelectedCompanyId(companyId)
+    setLoadingUsers(true)
+    try {
+      const res = await api.get(`/admin/companies/${companyId}/users`)
+      setCompanyUsers(res.data)
+    } catch {
+      setCompanyUsers([])
+    }
+    setLoadingUsers(false)
+  }
+
+  const ROLE_COLORS: Record<string, string> = {
+    owner: 'red', admin: 'violet', manager: 'blue',
+    cashier: 'green', accountant: 'orange', staff: 'gray',
+  }
+
+  return (
+    <Stack gap="lg">
+      {/* Header banner */}
+      <Card shadow="xs" padding="lg" radius="md" withBorder style={{ borderColor: 'var(--mantine-color-violet-4)', background: 'rgba(139,92,246,0.04)' }}>
+        <Group gap={10}>
+          <IconCrown size={22} color="var(--mantine-color-violet-6)" />
+          <div>
+            <Text fw={700} size="lg">Super Admin Panel</Text>
+            <Text size="sm" c="dimmed">ดูและจัดการข้อมูลทั้งหมดในระบบ — เฉพาะ Super Admin เท่านั้น</Text>
+          </div>
+        </Group>
+      </Card>
+
+      {/* All Companies */}
+      <Card shadow="xs" padding="lg" radius="md" withBorder>
+        <Group gap={8} mb="md">
+          <IconBuilding size={20} color="var(--app-primary)" />
+          <Text fw={700} size="lg">บริษัททั้งหมดในระบบ</Text>
+          <Badge variant="light" color="indigo">{allCompanies.length} บริษัท</Badge>
+        </Group>
+        {companiesLoading ? (
+          <Loader style={{ margin: '20px auto', display: 'block' }} />
+        ) : (
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>ชื่อบริษัท</Table.Th>
+                <Table.Th>เลขภาษี</Table.Th>
+                <Table.Th ta="center">ผู้ใช้</Table.Th>
+                <Table.Th ta="center">สถานะ</Table.Th>
+                <Table.Th ta="center">สร้างเมื่อ</Table.Th>
+                <Table.Th ta="right">ดูผู้ใช้</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {allCompanies.map((c: any) => (
+                <Table.Tr key={c.id} style={{ background: selectedCompanyId === c.id ? 'rgba(99,102,241,0.06)' : undefined }}>
+                  <Table.Td>
+                    <Group gap={8}>
+                      <div className="settings-user-avatar" style={{ background: 'var(--mantine-color-indigo-6)' }}>
+                        {(c.name || '?').charAt(0).toUpperCase()}
+                      </div>
+                      <Text size="sm" fw={600}>{c.name}</Text>
+                    </Group>
+                  </Table.Td>
+                  <Table.Td><Text size="sm" ff="monospace" c="dimmed">{c.tax_id || '—'}</Text></Table.Td>
+                  <Table.Td ta="center"><Badge variant="light" color="blue">{c.user_count}</Badge></Table.Td>
+                  <Table.Td ta="center">
+                    <Badge variant="dot" color={c.is_active ? 'green' : 'red'}>
+                      {c.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td ta="center">
+                    <Text size="xs" c="dimmed">{c.created_at ? new Date(c.created_at).toLocaleDateString('th-TH') : '—'}</Text>
+                  </Table.Td>
+                  <Table.Td ta="right">
+                    <Button size="xs" variant={selectedCompanyId === c.id ? 'filled' : 'light'}
+                      rightSection={<IconChevronRight size={14} />}
+                      onClick={() => loadCompanyUsers(c.id)}>
+                      ดูผู้ใช้
+                    </Button>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </Card>
+
+      {/* Company Users (when selected) */}
+      {selectedCompanyId && (
+        <Card shadow="xs" padding="lg" radius="md" withBorder>
+          <Group gap={8} mb="md">
+            <IconUsers size={20} color="var(--app-primary)" />
+            <Text fw={700} size="lg">
+              ผู้ใช้ใน: {allCompanies.find((c: any) => c.id === selectedCompanyId)?.name || selectedCompanyId}
+            </Text>
+            <Badge variant="light" color="indigo">{companyUsers.length} คน</Badge>
+          </Group>
+          {loadingUsers ? (
+            <Loader style={{ margin: '20px auto', display: 'block' }} />
+          ) : companyUsers.length === 0 ? (
+            <Text ta="center" c="dimmed" py="md">ยังไม่มีผู้ใช้</Text>
+          ) : (
+            <Table striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>ชื่อ-สกุล</Table.Th>
+                  <Table.Th>Username</Table.Th>
+                  <Table.Th>ตำแหน่ง</Table.Th>
+                  <Table.Th ta="center">Super Admin</Table.Th>
+                  <Table.Th ta="center">สถานะ</Table.Th>
+                  <Table.Th>เข้าร่วมเมื่อ</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {companyUsers.map((u: any) => (
+                  <Table.Tr key={u.id}>
+                    <Table.Td>
+                      <Group gap={8}>
+                        <div className="settings-user-avatar">
+                          {(u.nick_name || u.full_name || '?').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <Text size="sm" fw={600}>{u.full_name}</Text>
+                          {u.nick_name && <Text size="xs" c="dimmed">{u.nick_name}</Text>}
+                        </div>
+                      </Group>
+                    </Table.Td>
+                    <Table.Td><Text size="sm" ff="monospace">{u.username}</Text></Table.Td>
+                    <Table.Td>
+                      <Badge variant="light" color={ROLE_COLORS[u.role] || 'gray'}>{u.role}</Badge>
+                    </Table.Td>
+                    <Table.Td ta="center">
+                      {u.is_superadmin
+                        ? <Badge color="violet" variant="filled" size="sm">Super Admin</Badge>
+                        : <Text size="xs" c="dimmed">—</Text>}
+                    </Table.Td>
+                    <Table.Td ta="center">
+                      <Badge variant="dot" color={u.is_active ? 'green' : 'red'}>
+                        {u.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed">
+                        {u.joined_at ? new Date(u.joined_at).toLocaleDateString('th-TH') : '—'}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          )}
+        </Card>
+      )}
+
+      {/* All System Users */}
+      <Card shadow="xs" padding="lg" radius="md" withBorder>
+        <Group gap={8} mb="md">
+          <IconShieldCheck size={20} color="var(--app-success)" />
+          <Text fw={700} size="lg">ผู้ใช้ทั้งหมดในระบบ</Text>
+          <Badge variant="light" color="green">{allUsers.length} คน</Badge>
+        </Group>
+        {usersLoading ? (
+          <Loader style={{ margin: '20px auto', display: 'block' }} />
+        ) : (
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>ชื่อ-สกุล</Table.Th>
+                <Table.Th>Username</Table.Th>
+                <Table.Th ta="center">จำนวนบริษัท</Table.Th>
+                <Table.Th ta="center">Super Admin</Table.Th>
+                <Table.Th ta="center">สถานะ</Table.Th>
+                <Table.Th ta="right">จัดการ</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {allUsers.map((u: any) => (
+                <Table.Tr key={u.id}>
+                  <Table.Td>
+                    <Group gap={8}>
+                      <div className="settings-user-avatar" style={u.is_superadmin ? { background: 'var(--mantine-color-violet-6)' } : undefined}>
+                        {(u.nick_name || u.full_name || '?').charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <Group gap={6}>
+                          <Text size="sm" fw={600}>{u.full_name}</Text>
+                          {u.is_superadmin && <IconCrown size={14} color="var(--mantine-color-violet-5)" />}
+                        </Group>
+                        {u.nick_name && <Text size="xs" c="dimmed">{u.nick_name}</Text>}
+                      </div>
+                    </Group>
+                  </Table.Td>
+                  <Table.Td><Text size="sm" ff="monospace">{u.username}</Text></Table.Td>
+                  <Table.Td ta="center">
+                    <Badge variant="light" color="blue">{u.company_count} บริษัท</Badge>
+                  </Table.Td>
+                  <Table.Td ta="center">
+                    {u.is_superadmin
+                      ? <Badge color="violet" variant="filled" size="sm">Super Admin</Badge>
+                      : <Text size="xs" c="dimmed">—</Text>}
+                  </Table.Td>
+                  <Table.Td ta="center">
+                    <Badge variant="dot" color={u.is_active ? 'green' : 'red'}>
+                      {u.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td ta="right">
+                    <Tooltip label={u.is_superadmin ? 'ยกเลิกสิทธิ์ Super Admin' : 'ให้สิทธิ์ Super Admin'}>
+                      <Button size="xs"
+                        variant={u.is_superadmin ? 'filled' : 'light'}
+                        color={u.is_superadmin ? 'red' : 'violet'}
+                        leftSection={<IconCrown size={13} />}
+                        loading={toggleSuperAdminMutation.isPending}
+                        onClick={() => {
+                          const action = u.is_superadmin ? 'ยกเลิก' : 'ให้'
+                          if (confirm(`ต้องการ${action}สิทธิ์ Super Admin ให้ ${u.full_name}?`))
+                            toggleSuperAdminMutation.mutate(u.id)
+                        }}>
+                        {u.is_superadmin ? 'ยกเลิก' : 'ให้สิทธิ์'}
+                      </Button>
+                    </Tooltip>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </Card>
+    </Stack>
   )
 }
 

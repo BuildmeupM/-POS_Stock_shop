@@ -15,6 +15,7 @@ const auth = (req, res, next) => {
       id: decoded.id,
       username: decoded.username,
       fullName: decoded.fullName,
+      isSuperAdmin: !!decoded.isSuperAdmin,
       companyId: decoded.companyId,
       role: decoded.role,
     }

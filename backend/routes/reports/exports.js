@@ -342,22 +342,36 @@ router.get('/expenses', async (req, res) => {
 router.get('/template/products', async (req, res) => {
   try {
     const headers = [
-      'SKU*', 'Barcode', 'ชื่อสินค้า*', 'หน่วย*', 'ราคาทุน*', 'ราคาขาย*', 'ราคาขายขั้นต่ำ', 'สต๊อกขั้นต่ำ'
+      'SKU*', 'Barcode', 'ชื่อสินค้า*', 'หน่วย*', 'ราคาทุน*', 'ราคาขาย*', 'ราคาขายขั้นต่ำ', 'สต๊อกขั้นต่ำ', 'จำนวนรับเข้า'
     ]
 
-    const exampleRow = {
-      'SKU*': 'PRD-001',
-      'Barcode': '8850000000001',
-      'ชื่อสินค้า*': 'สินค้าตัวอย่าง',
-      'หน่วย*': 'ชิ้น',
-      'ราคาทุน*': 100,
-      'ราคาขาย*': 150,
-      'ราคาขายขั้นต่ำ': 120,
-      'สต๊อกขั้นต่ำ': 5,
-    }
+    const exampleRows = [
+      {
+        'SKU*': 'PRD-001',
+        'Barcode': '8850000000001',
+        'ชื่อสินค้า*': 'สินค้าตัวอย่าง',
+        'หน่วย*': 'ชิ้น',
+        'ราคาทุน*': 100,
+        'ราคาขาย*': 150,
+        'ราคาขายขั้นต่ำ': 120,
+        'สต๊อกขั้นต่ำ': 5,
+        'จำนวนรับเข้า': 50,
+      },
+      {
+        'SKU*': 'PRD-002',
+        'Barcode': '8850000000002',
+        'ชื่อสินค้า*': 'สินค้าตัวอย่าง 2',
+        'หน่วย*': 'กล่อง',
+        'ราคาทุน*': 200,
+        'ราคาขาย*': 350,
+        'ราคาขายขั้นต่ำ': 300,
+        'สต๊อกขั้นต่ำ': 3,
+        'จำนวนรับเข้า': 20,
+      },
+    ]
 
     const wb = XLSX.utils.book_new()
-    const ws = XLSX.utils.json_to_sheet([exampleRow], { header: headers })
+    const ws = XLSX.utils.json_to_sheet(exampleRows, { header: headers })
 
     ws['!cols'] = [
       { wch: 15 }, // SKU
@@ -368,6 +382,7 @@ router.get('/template/products', async (req, res) => {
       { wch: 12 }, // Selling
       { wch: 15 }, // Min selling
       { wch: 12 }, // Min stock
+      { wch: 14 }, // Quantity
     ]
 
     XLSX.utils.book_append_sheet(wb, ws, 'แบบฟอร์มนำเข้า')
