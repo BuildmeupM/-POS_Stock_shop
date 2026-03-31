@@ -10,7 +10,7 @@ import { notifications } from '@mantine/notifications'
 import {
   IconSearch, IconFilterOff, IconPlus, IconFileInvoice, IconReceipt,
   IconFileText, IconDotsVertical, IconEye, IconCheck, IconX, IconCash, IconAlertTriangle,
-  IconTrash,
+  IconTrash, IconTruck, IconList,
 } from '@tabler/icons-react'
 import api from '../../services/api'
 import { fmt, fmtDateTime as fmtDate } from '../../utils/formatters'
@@ -56,7 +56,7 @@ export default function SalesDocPage() {
   const [voidDocId, setVoidDocId] = useState<number | null>(null)
   // Delete modal
   const [deleteDocId, setDeleteDocId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<string>('active')
+  const [activeTab, setActiveTab] = useState<string>('quotation')
   // Approve modal
   const [approveDoc, setApproveDoc] = useState<any>(null)
   const [approvePayChannelId, setApprovePayChannelId] = useState<string | null>(null)
@@ -119,20 +119,39 @@ export default function SalesDocPage() {
 
   const activeDocs = filtered.filter((d: any) => d.status !== 'voided')
   const voidedDocs = filtered.filter((d: any) => d.status === 'voided')
-  const displayDocs = activeTab === 'voided' ? voidedDocs : activeDocs
+
+  const displayDocs = useMemo(() => {
+    if (activeTab === 'voided') return voidedDocs
+    if (activeTab === 'all') return activeDocs
+    return activeDocs.filter((d: any) => d.doc_type === activeTab)
+  }, [activeTab, activeDocs, voidedDocs])
 
   const totalPages = Math.ceil(displayDocs.length / PAGE_SIZE)
   const paginated = displayDocs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
-  // Summary
+  // Summary — avoid double-counting linked document chains
   const summary = useMemo(() => {
     const qt = docs.filter((d: any) => d.doc_type === 'quotation').length
     const iv = docs.filter((d: any) => d.doc_type === 'invoice').length
     const rc = docs.filter((d: any) => d.doc_type === 'receipt').length
-    const totalAmount = docs.filter((d: any) => d.doc_type !== 'quotation' && d.status !== 'voided')
-      .reduce((s: number, d: any) => s + (parseFloat(d.total_amount) || 0), 0)
-    const unpaid = docs.filter((d: any) => d.doc_type === 'invoice' && d.payment_status === 'unpaid' && d.status === 'approved')
-      .reduce((s: number, d: any) => s + (parseFloat(d.total_amount) || 0), 0)
+
+    // Build map of doc id → doc_type to check what a ref_doc_id points to
+    const docTypeMap = new Map(docs.map((d: any) => [d.id, d.doc_type]))
+
+    // A doc is a "follow-up" if its ref_doc_id points to a non-quotation doc
+    // (e.g. delivery/receipt referencing an invoice — same sale, not new revenue)
+    const isFollowUp = (d: any) => d.ref_doc_id && docTypeMap.get(d.ref_doc_id) !== 'quotation'
+
+    // ยอดขายรวม: count invoices (and standalone docs), skip delivery/receipt that follow an invoice
+    const totalAmount = docs.filter((d: any) =>
+      d.doc_type !== 'quotation' && d.status !== 'voided' && !isFollowUp(d)
+    ).reduce((s: number, d: any) => s + (parseFloat(d.total_amount) || 0), 0)
+
+    // ค้างชำระ: unpaid invoices only
+    const unpaid = docs.filter((d: any) =>
+      d.doc_type === 'invoice' && d.payment_status === 'unpaid' && d.status === 'approved'
+    ).reduce((s: number, d: any) => s + (parseFloat(d.total_amount) || 0), 0)
+
     return { qt, iv, rc, totalAmount, unpaid }
   }, [docs])
 
@@ -200,14 +219,28 @@ export default function SalesDocPage() {
         </Group>
       </Card>
 
-      {/* Tabs: Active / Voided */}
-      <Tabs value={activeTab} onChange={(v) => { setActiveTab(v || 'active'); setPage(1) }}>
+      {/* Tabs: by doc type */}
+      <Tabs value={activeTab} onChange={(v) => { setActiveTab(v || 'quotation'); setPage(1) }}>
         <Tabs.List>
-          <Tabs.Tab value="active" leftSection={<IconCheck size={14} />}>
-            เอกสารปัจจุบัน <Badge size="xs" variant="light" ml={4}>{activeDocs.length}</Badge>
+          <Tabs.Tab value="quotation" color="blue" leftSection={<IconFileText size={14} />}>
+            ใบเสนอราคา <Badge size="xs" variant="light" color="blue" ml={4}>{activeDocs.filter((d: any) => d.doc_type === 'quotation').length}</Badge>
           </Tabs.Tab>
+          <Tabs.Tab value="invoice" color="indigo" leftSection={<IconFileInvoice size={14} />}>
+            ใบแจ้งหนี้ <Badge size="xs" variant="light" color="indigo" ml={4}>{activeDocs.filter((d: any) => d.doc_type === 'invoice').length}</Badge>
+          </Tabs.Tab>
+          <Tabs.Tab value="delivery" color="cyan" leftSection={<IconTruck size={14} />}>
+            ใบส่งของ <Badge size="xs" variant="light" color="cyan" ml={4}>{activeDocs.filter((d: any) => d.doc_type === 'delivery').length}</Badge>
+          </Tabs.Tab>
+          <Tabs.Tab value="receipt" color="green" leftSection={<IconReceipt size={14} />}>
+            ใบเสร็จรับเงิน <Badge size="xs" variant="light" color="green" ml={4}>{activeDocs.filter((d: any) => d.doc_type === 'receipt').length}</Badge>
+          </Tabs.Tab>
+          {vatEnabled && (
+            <Tabs.Tab value="receipt_tax" color="violet" leftSection={<IconReceipt size={14} />}>
+              ใบกำกับภาษี <Badge size="xs" variant="light" color="violet" ml={4}>{activeDocs.filter((d: any) => d.doc_type === 'receipt_tax').length}</Badge>
+            </Tabs.Tab>
+          )}
           <Tabs.Tab value="voided" color="red" leftSection={<IconX size={14} />}>
-            เอกสารยกเลิก <Badge size="xs" variant="light" color="red" ml={4}>{voidedDocs.length}</Badge>
+            ยกเลิก <Badge size="xs" variant="light" color="red" ml={4}>{voidedDocs.length}</Badge>
           </Tabs.Tab>
         </Tabs.List>
       </Tabs>

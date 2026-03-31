@@ -19,6 +19,55 @@ async function getCompanyVatRate(companyId) {
   return 7
 }
 
+// Helper: sync payment status across all linked documents in the same chain
+async function syncChainPaymentStatus(connection, docId, companyId) {
+  // Find root document by following ref_doc_id up
+  let rootId = docId
+  for (let i = 0; i < 10; i++) { // safety limit
+    const [rows] = await connection.execute(
+      'SELECT ref_doc_id FROM sales_documents WHERE id = ? AND company_id = ?', [rootId, companyId]
+    )
+    if (rows.length === 0 || !rows[0].ref_doc_id) break
+    rootId = rows[0].ref_doc_id
+  }
+
+  // Collect all doc IDs in the chain (BFS from root)
+  const chainIds = [rootId]
+  const queue = [rootId]
+  while (queue.length > 0) {
+    const currentId = queue.shift()
+    const [children] = await connection.execute(
+      'SELECT id FROM sales_documents WHERE ref_doc_id = ? AND company_id = ? AND status != ?',
+      [currentId, companyId, 'voided']
+    )
+    for (const child of children) {
+      chainIds.push(child.id)
+      queue.push(child.id)
+    }
+  }
+
+  if (chainIds.length <= 1) return // no linked docs
+
+  // Find the "best" payment status in the chain (paid > partial > unpaid)
+  const [chainDocs] = await connection.execute(
+    `SELECT payment_status, paid_amount, payment_method, payment_channel_id, paid_at
+     FROM sales_documents WHERE id IN (${chainIds.map(() => '?').join(',')})`,
+    chainIds
+  )
+  const hasPaid = chainDocs.some(d => d.payment_status === 'paid')
+  const hasPartial = chainDocs.some(d => d.payment_status === 'partial')
+  const bestStatus = hasPaid ? 'paid' : hasPartial ? 'partial' : 'unpaid'
+  const paidDoc = chainDocs.find(d => d.payment_status === 'paid' || d.payment_status === 'partial')
+
+  // Update all docs in the chain to the same payment status
+  await connection.execute(
+    `UPDATE sales_documents SET payment_status = ?, paid_amount = CASE WHEN payment_status != ? THEN total_amount ELSE paid_amount END,
+     payment_method = COALESCE(payment_method, ?), paid_at = COALESCE(paid_at, ?)
+     WHERE id IN (${chainIds.map(() => '?').join(',')}) AND status != 'voided'`,
+    [bestStatus, bestStatus, paidDoc?.payment_method || null, paidDoc?.paid_at || null, ...chainIds]
+  )
+}
+
 // Doc type prefixes
 const DOC_PREFIX = {
   quotation: 'QT', invoice: 'IV', receipt: 'RC', receipt_tax: 'RT',
@@ -120,7 +169,39 @@ router.get('/:id', async (req, res) => {
       [req.params.id, req.user.companyId]
     )
 
-    res.json({ ...docs[0], items, sourceDoc, childDocs })
+    // Build full document chain (all linked docs regardless of which doc is being viewed)
+    const docFields = 'id, doc_type, doc_number, status, total_amount, doc_date, customer_name, ref_doc_id'
+    // 1. Find root by following ref_doc_id upward
+    let rootId = docs[0].id
+    let currentRefId = docs[0].ref_doc_id
+    for (let i = 0; i < 10 && currentRefId; i++) {
+      rootId = currentRefId
+      const parentRows = await executeQuery(
+        `SELECT ref_doc_id FROM sales_documents WHERE id = ? AND company_id = ?`,
+        [rootId, req.user.companyId]
+      )
+      currentRefId = parentRows.length > 0 ? parentRows[0].ref_doc_id : null
+    }
+    // 2. BFS from root to collect all chain docs in order
+    const chainDocs = []
+    const queue = [rootId]
+    while (queue.length > 0) {
+      const curId = queue.shift()
+      const rows = await executeQuery(
+        `SELECT ${docFields} FROM sales_documents WHERE id = ? AND company_id = ?`,
+        [curId, req.user.companyId]
+      )
+      if (rows.length > 0) {
+        chainDocs.push(rows[0])
+        const kids = await executeQuery(
+          `SELECT id FROM sales_documents WHERE ref_doc_id = ? AND company_id = ? ORDER BY created_at`,
+          [curId, req.user.companyId]
+        )
+        for (const k of kids) queue.push(k.id)
+      }
+    }
+
+    res.json({ ...docs[0], items, sourceDoc, childDocs, chainDocs })
   } catch (error) {
     console.error('Get sales doc error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
@@ -207,7 +288,7 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
       totalVat += lineVat
       totalWht += lineWht
 
-      return { ...item, quantity: qty, unitPrice: price, discountPerUnit: actualDisc, subtotal: lineTotal }
+      return { ...item, quantity: qty, unitPrice: price, discountPerUnit: discPerUnit, subtotal: lineTotal }
     })
 
 
@@ -294,6 +375,7 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
         `UPDATE sales_documents SET paid_amount = ?, payment_status = 'paid', payment_method = ?, payment_channel_id = ?, paid_at = NOW() WHERE id = ?`,
         [totalAmount, payMethod || 'cash', payChId || null, docId]
       )
+      await syncChainPaymentStatus(connection, docId, companyId)
     }
 
     await connection.commit()
@@ -333,6 +415,7 @@ router.put('/:id/approve', roleCheck('owner', 'admin', 'manager'), async (req, r
         `UPDATE sales_documents SET paid_amount = ?, payment_status = 'paid', payment_method = ?, payment_channel_id = ?, paid_at = NOW() WHERE id = ?`,
         [payAmount, paymentMethod || 'cash', paymentChannelId || null, doc.id]
       )
+      await syncChainPaymentStatus(connection, doc.id, companyId)
     }
 
     // Auto-journal for invoice/receipt
@@ -398,6 +481,9 @@ router.put('/:id/pay', roleCheck('owner', 'admin', 'manager', 'accountant'), asy
         payment_channel_id = ?, paid_at = NOW() WHERE id = ?`,
       [newPaid, payStatus, paymentMethod || 'cash', paymentChannelId || null, doc.id]
     )
+
+    // Sync payment status across linked document chain
+    await syncChainPaymentStatus(connection, doc.id, req.user.companyId)
 
     // Journal: Dr. Cash / Cr. Receivable
     if (payAmount > 0) {

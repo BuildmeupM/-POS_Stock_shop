@@ -143,7 +143,7 @@ export default function SalesDocDetailPage() {
   const vatAmount = parseFloat(doc.vat_amount) || 0
   const totalAmount = parseFloat(doc.total_amount) || 0
 
-  const companyName = company?.company_name || 'บริษัท'
+  const companyName = company?.name || 'บริษัท'
   const companyAddress = company?.address || ''
   const companyTaxId = company?.tax_id || ''
   const companyBranch = company?.branch || 'สำนักงานใหญ่'
@@ -159,7 +159,8 @@ export default function SalesDocDetailPage() {
   const nextDocOptions = (doc.status === 'approved' || doc.status === 'accepted') ? (NEXT_DOC_MAP[doc.doc_type] || []) : []
   const sourceDoc = doc.sourceDoc || null
   const childDocs = doc.childDocs || []
-  const hasLinkedDocs = sourceDoc || childDocs.length > 0
+  const chainDocs: any[] = doc.chainDocs || []
+  const hasLinkedDocs = chainDocs.length > 1 || sourceDoc || childDocs.length > 0
 
   // ─── Print Function ───
   const handlePrint = () => {
@@ -167,7 +168,9 @@ export default function SalesDocDetailPage() {
     if (!printWindow) return
 
     const items = doc.items || []
-    const itemRows = items.map((item: any, i: number) => `
+    const itemRows = items.map((item: any, i: number) => {
+      const discountTotal = parseFloat(item.discount_per_unit || 0) * parseFloat(item.quantity || 0)
+      return `
       <tr>
         <td style="text-align:center;padding:8px 6px;border-bottom:1px solid #e5e7eb">${i + 1}</td>
         <td style="padding:8px 6px;border-bottom:1px solid #e5e7eb">
@@ -178,9 +181,10 @@ export default function SalesDocDetailPage() {
         <td style="text-align:center;padding:8px 6px;border-bottom:1px solid #e5e7eb">${parseFloat(item.quantity).toLocaleString()}</td>
         <td style="text-align:center;padding:8px 6px;border-bottom:1px solid #e5e7eb">${item.unit || 'ชิ้น'}</td>
         <td style="text-align:right;padding:8px 6px;border-bottom:1px solid #e5e7eb">${parseFloat(item.unit_price).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+        <td style="text-align:right;padding:8px 6px;border-bottom:1px solid #e5e7eb;color:#dc2626">${parseFloat(item.discount_per_unit) > 0 ? (item.discount_type === 'percent' ? `${parseFloat(item.discount_per_unit)}%` : discountTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })) : '-'}</td>
         <td style="text-align:right;padding:8px 6px;border-bottom:1px solid #e5e7eb">${parseFloat(item.subtotal).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-      </tr>
-    `).join('')
+      </tr>`
+    }).join('')
 
     const html = `<!DOCTYPE html>
 <html><head>
@@ -189,10 +193,10 @@ export default function SalesDocDetailPage() {
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Sarabun', sans-serif; color: #333; font-size: 14px; }
-  .page { max-width: 210mm; margin: 0 auto; padding: 20mm 15mm; }
+  body { font-family: 'Sarabun', sans-serif; color: #333; font-size: 14px; background: #e5e5e5; }
+  .page { width: 210mm; min-height: 297mm; margin: 10mm auto; padding: 15mm 20mm; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
   .header { display: flex; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 3px solid ${isTaxInvoice ? '#7c3aed' : '#16a34a'}; }
-  .company-info { flex: 1; }
+  .company-info { flex: 1; max-width: 55%; }
   .company-name { font-size: 22px; font-weight: 700; color: #111; }
   .company-detail { font-size: 12px; color: #555; margin-top: 4px; }
   .doc-title-box { text-align: right; }
@@ -201,10 +205,10 @@ export default function SalesDocDetailPage() {
   .doc-number { font-size: 14px; font-weight: 600; margin-top: 8px; }
   .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
   .info-box { padding: 14px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; }
-  .info-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; margin-bottom: 6px; }
-  .info-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 13px; }
-  .info-row .label { color: #666; }
-  .info-row .value { font-weight: 600; }
+  .info-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; margin-bottom: 10px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+  .info-row { display: flex; gap: 8px; padding: 3px 0; font-size: 13px; }
+  .info-row .label { color: #666; white-space: nowrap; min-width: 70px; }
+  .info-row .value { font-weight: 600; word-break: break-word; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
   thead th { background: ${isTaxInvoice ? '#f5f3ff' : '#f0fdf4'}; padding: 10px 6px; font-size: 12px; font-weight: 700; color: #333; border-bottom: 2px solid ${isTaxInvoice ? '#c4b5fd' : '#86efac'}; }
   .totals { display: flex; justify-content: flex-end; margin-bottom: 20px; }
@@ -218,37 +222,37 @@ export default function SalesDocDetailPage() {
   .sig-box { text-align: center; }
   .sig-line { border-top: 1px solid #333; margin-top: 50px; padding-top: 6px; font-size: 12px; }
   .sig-date { font-size: 11px; color: #888; margin-top: 2px; }
-  @media print { @page { size: A4; margin: 15mm; } .page { padding: 0; max-width: none; } }
+  @media print { body { background: #fff; } @page { size: A4; margin: 15mm; } .page { width: auto; min-height: auto; margin: 0; padding: 0; box-shadow: none; } }
 </style>
 </head><body>
 <div class="page">
   <div class="header">
     <div class="company-info">
       <div class="company-name">${companyName}</div>
+      ${companyTaxId ? `<div class="company-detail">เลขประจำตัวผู้เสียภาษี: <strong>${companyTaxId}</strong></div>` : ''}
       ${companyAddress ? `<div class="company-detail">${companyAddress}</div>` : ''}
-      ${isTaxInvoice && companyTaxId ? `<div class="company-detail">เลขประจำตัวผู้เสียภาษี: <strong>${companyTaxId}</strong></div>` : ''}
       ${isTaxInvoice ? `<div class="company-detail">${companyBranch}</div>` : ''}
     </div>
     <div class="doc-title-box">
       <div class="doc-title">${config.label}</div>
       <div class="doc-title-en">${config.labelEn}</div>
-      <div class="doc-number">เลขที่: ${doc.doc_number}</div>
     </div>
   </div>
 
   <div class="info-grid">
     <div class="info-box">
       <div class="info-label">ข้อมูลลูกค้า</div>
-      <div class="info-row"><span class="label">ชื่อ</span><span class="value">${doc.customer_name || doc.customer_name_ref || 'ลูกค้าทั่วไป'}</span></div>
+      <div class="info-row"><span class="label">ชื่อ</span><span class="value">${doc.customer_name || doc.customer_name_ref || 'ลูกค้าทั่วไป (Walk-in)'}</span></div>
       ${doc.customer_address ? `<div class="info-row"><span class="label">ที่อยู่</span><span class="value">${doc.customer_address}</span></div>` : ''}
-      ${isTaxInvoice && doc.customer_tax_id ? `<div class="info-row"><span class="label">เลขผู้เสียภาษี</span><span class="value">${doc.customer_tax_id}</span></div>` : ''}
       ${doc.customer_phone ? `<div class="info-row"><span class="label">โทรศัพท์</span><span class="value">${doc.customer_phone}</span></div>` : ''}
+      ${doc.customer_tax_id ? `<div class="info-row"><span class="label">เลขผู้เสียภาษี</span><span class="value">${doc.customer_tax_id}</span></div>` : ''}
     </div>
     <div class="info-box">
       <div class="info-label">ข้อมูลเอกสาร</div>
+      <div class="info-row"><span class="label">เลขที่</span><span class="value">${doc.doc_number}</span></div>
       <div class="info-row"><span class="label">วันที่</span><span class="value">${fmtDate(doc.doc_date)}</span></div>
       ${doc.due_date ? `<div class="info-row"><span class="label">ครบกำหนด</span><span class="value">${fmtDate(doc.due_date)}</span></div>` : ''}
-      ${doc.reference ? `<div class="info-row"><span class="label">อ้างอิง</span><span class="value">${doc.reference}</span></div>` : ''}
+      ${doc.ref_doc_number ? `<div class="info-row"><span class="label">อ้างอิง</span><span class="value">${doc.ref_doc_number}</span></div>` : doc.reference ? `<div class="info-row"><span class="label">อ้างอิง</span><span class="value">${doc.reference}</span></div>` : ''}
     </div>
   </div>
 
@@ -260,6 +264,7 @@ export default function SalesDocDetailPage() {
         <th style="width:70px;text-align:center">จำนวน</th>
         <th style="width:60px;text-align:center">หน่วย</th>
         <th style="width:100px;text-align:right">ราคา/หน่วย</th>
+        <th style="width:90px;text-align:right">ส่วนลด</th>
         <th style="width:110px;text-align:right">จำนวนเงิน</th>
       </tr>
     </thead>
@@ -364,89 +369,58 @@ export default function SalesDocDetailPage() {
           </div>
 
           <div style={{ padding: '16px 20px' }}>
-            {/* Document Flow Visualization */}
+            {/* Document Flow Visualization — show full chain */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {/* Source document */}
-              {sourceDoc && (
-                <>
-                  <div
-                    onClick={() => navigate(`/sales-doc/${sourceDoc.id}`)}
-                    style={{
-                      padding: '10px 16px', borderRadius: 10, cursor: 'pointer',
-                      background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)',
-                      transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(59,130,246,0.12)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(59,130,246,0.4)' }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(59,130,246,0.06)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(59,130,246,0.2)' }}
-                  >
-                    <Text size="xs" c="dimmed" fw={600}>
-                      {DOC_CONFIG[sourceDoc.doc_type]?.label || sourceDoc.doc_type}
-                    </Text>
-                    <Text size="sm" fw={700} c="blue" style={{ cursor: 'pointer' }}>
-                      {sourceDoc.doc_number}
-                    </Text>
-                    <Group gap={6} mt={2}>
-                      <Badge size="xs" variant="light" color={STATUS_MAP[sourceDoc.status]?.color || 'gray'}>
-                        {STATUS_MAP[sourceDoc.status]?.label || sourceDoc.status}
-                      </Badge>
-                      <Text size="xs" c="dimmed">฿{fmt(parseFloat(sourceDoc.total_amount) || 0)}</Text>
-                    </Group>
-                  </div>
-                  <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
-                </>
-              )}
-
-              {/* Current document */}
-              <div style={{
-                padding: '10px 16px', borderRadius: 10,
-                background: config.gradient,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-              }}>
-                <Text size="xs" c="rgba(255,255,255,0.7)" fw={600}>{config.label}</Text>
-                <Text size="sm" fw={700} c="white">{doc.doc_number}</Text>
-                <Group gap={6} mt={2}>
-                  <Badge size="xs" variant="white" color="dark">{status.label}</Badge>
-                  <Text size="xs" c="rgba(255,255,255,0.8)">฿{fmt(totalAmount)}</Text>
-                </Group>
-              </div>
-
-              {/* Child documents */}
-              {childDocs.length > 0 && (
-                <>
-                  <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
-                  {childDocs.map((child: any, ci: number) => (
-                    <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {chainDocs.map((chainDoc: any, i: number) => {
+                const isCurrent = chainDoc.id === doc.id
+                const docConfig = DOC_CONFIG[chainDoc.doc_type] || DOC_CONFIG.invoice
+                return (
+                  <div key={chainDoc.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {i > 0 && (
+                      <IconArrowRight size={18} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
+                    )}
+                    {isCurrent ? (
+                      <div style={{
+                        padding: '10px 16px', borderRadius: 10,
+                        background: config.gradient,
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                      }}>
+                        <Text size="xs" c="rgba(255,255,255,0.7)" fw={600}>{config.label}</Text>
+                        <Text size="sm" fw={700} c="white">{doc.doc_number}</Text>
+                        <Group gap={6} mt={2}>
+                          <Badge size="xs" variant="white" color="dark">{status.label}</Badge>
+                          <Text size="xs" c="rgba(255,255,255,0.8)">฿{fmt(totalAmount)}</Text>
+                        </Group>
+                      </div>
+                    ) : (
                       <div
-                        onClick={() => navigate(`/sales-doc/${child.id}`)}
+                        onClick={() => navigate(`/sales-doc/${chainDoc.id}`)}
                         style={{
                           padding: '10px 16px', borderRadius: 10, cursor: 'pointer',
-                          background: `${DOC_CONFIG[child.doc_type]?.color ? `var(--mantine-color-${DOC_CONFIG[child.doc_type].color}-light)` : 'rgba(34,197,94,0.06)'}`,
-                          border: `1px solid ${DOC_CONFIG[child.doc_type]?.color ? `var(--mantine-color-${DOC_CONFIG[child.doc_type].color}-light-hover)` : 'rgba(34,197,94,0.2)'}`,
+                          background: `${docConfig.color ? `var(--mantine-color-${docConfig.color}-light)` : 'rgba(59,130,246,0.06)'}`,
+                          border: `1px solid ${docConfig.color ? `var(--mantine-color-${docConfig.color}-light-hover)` : 'rgba(59,130,246,0.2)'}`,
                           transition: 'all 0.2s',
                         }}
                         onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-1px)'; (e.currentTarget as HTMLDivElement).style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)' }}
                         onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = 'none'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'none' }}
                       >
                         <Text size="xs" c="dimmed" fw={600}>
-                          {DOC_CONFIG[child.doc_type]?.label || child.doc_type}
+                          {docConfig.label || chainDoc.doc_type}
                         </Text>
-                        <Text size="sm" fw={700} c={DOC_CONFIG[child.doc_type]?.color || 'green'} style={{ cursor: 'pointer' }}>
-                          {child.doc_number}
+                        <Text size="sm" fw={700} c={docConfig.color || 'blue'} style={{ cursor: 'pointer' }}>
+                          {chainDoc.doc_number}
                         </Text>
                         <Group gap={6} mt={2}>
-                          <Badge size="xs" variant="light" color={STATUS_MAP[child.status]?.color || 'gray'}>
-                            {STATUS_MAP[child.status]?.label || child.status}
+                          <Badge size="xs" variant="light" color={STATUS_MAP[chainDoc.status]?.color || 'gray'}>
+                            {STATUS_MAP[chainDoc.status]?.label || chainDoc.status}
                           </Badge>
-                          <Text size="xs" c="dimmed">฿{fmt(parseFloat(child.total_amount) || 0)}</Text>
+                          <Text size="xs" c="dimmed">฿{fmt(parseFloat(chainDoc.total_amount) || 0)}</Text>
                         </Group>
                       </div>
-                      {ci < childDocs.length - 1 && (
-                        <IconArrowRight size={14} color="var(--mantine-color-dimmed)" style={{ flexShrink: 0 }} />
-                      )}
-                    </div>
-                  ))}
-                </>
-              )}
+                    )}
+                  </div>
+                )
+              })}
 
               {/* Placeholder for next doc */}
               {childDocs.length === 0 && nextDocOptions.length > 0 && (
@@ -470,6 +444,21 @@ export default function SalesDocDetailPage() {
 
       {/* Document Info */}
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
+        <Card shadow="xs" padding="lg" radius="md" withBorder>
+          <Group gap={8} mb="md">
+            <ThemeIcon size="sm" variant="light" color="orange" radius="xl"><IconUser size={14} /></ThemeIcon>
+            <Text fw={700} size="sm">ข้อมูลลูกค้า</Text>
+          </Group>
+          <Stack gap={4}>
+            <Group justify="space-between"><Text size="sm" c="dimmed">ชื่อ</Text><Text size="sm" fw={600}>{doc.customer_name || doc.customer_name_ref || 'ลูกค้าทั่วไป'}</Text></Group>
+            {doc.customer_phone && <Group justify="space-between"><Text size="sm" c="dimmed">โทรศัพท์</Text><Text size="sm">{doc.customer_phone}</Text></Group>}
+            {doc.customer_tax_id && (
+              <Group justify="space-between"><Text size="sm" c="dimmed">เลขผู้เสียภาษี</Text><Text size="sm" fw={600} ff="monospace">{doc.customer_tax_id}</Text></Group>
+            )}
+            {doc.customer_address && <Group justify="space-between"><Text size="sm" c="dimmed">ที่อยู่</Text><Text size="sm" style={{ maxWidth: 250, textAlign: 'right' }}>{doc.customer_address}</Text></Group>}
+          </Stack>
+        </Card>
+
         <Card shadow="xs" padding="lg" radius="md" withBorder>
           <Group gap={8} mb="md">
             <ThemeIcon size="sm" variant="light" color={config.color} radius="xl"><IconCalendar size={14} /></ThemeIcon>
@@ -498,21 +487,6 @@ export default function SalesDocDetailPage() {
             )}
           </Stack>
         </Card>
-
-        <Card shadow="xs" padding="lg" radius="md" withBorder>
-          <Group gap={8} mb="md">
-            <ThemeIcon size="sm" variant="light" color="orange" radius="xl"><IconUser size={14} /></ThemeIcon>
-            <Text fw={700} size="sm">ข้อมูลลูกค้า</Text>
-          </Group>
-          <Stack gap={4}>
-            <Group justify="space-between"><Text size="sm" c="dimmed">ชื่อ</Text><Text size="sm" fw={600}>{doc.customer_name || doc.customer_name_ref || 'ลูกค้าทั่วไป'}</Text></Group>
-            {doc.customer_phone && <Group justify="space-between"><Text size="sm" c="dimmed">โทรศัพท์</Text><Text size="sm">{doc.customer_phone}</Text></Group>}
-            {isTaxInvoice && doc.customer_tax_id && (
-              <Group justify="space-between"><Text size="sm" c="dimmed">เลขผู้เสียภาษี</Text><Text size="sm" fw={600} ff="monospace">{doc.customer_tax_id}</Text></Group>
-            )}
-            {doc.customer_address && <Group justify="space-between"><Text size="sm" c="dimmed">ที่อยู่</Text><Text size="sm" style={{ maxWidth: 250, textAlign: 'right' }}>{doc.customer_address}</Text></Group>}
-          </Stack>
-        </Card>
       </SimpleGrid>
 
       {/* Items Table */}
@@ -530,6 +504,7 @@ export default function SalesDocDetailPage() {
               <Table.Th ta="center" style={{ width: 80 }}>จำนวน</Table.Th>
               <Table.Th ta="center" style={{ width: 60 }}>หน่วย</Table.Th>
               <Table.Th ta="right" style={{ width: 110 }}>ราคา/หน่วย</Table.Th>
+              <Table.Th ta="right" style={{ width: 100 }}>ส่วนลด</Table.Th>
               <Table.Th ta="right" style={{ width: 120 }}>จำนวนเงิน</Table.Th>
             </Table.Tr>
           </Table.Thead>
@@ -544,6 +519,7 @@ export default function SalesDocDetailPage() {
                 <Table.Td ta="center"><Text size="sm">{parseFloat(item.quantity).toLocaleString()}</Text></Table.Td>
                 <Table.Td ta="center"><Text size="sm" c="dimmed">{item.unit || 'ชิ้น'}</Text></Table.Td>
                 <Table.Td ta="right"><Text size="sm">฿{fmt(parseFloat(item.unit_price))}</Text></Table.Td>
+                <Table.Td ta="right"><Text size="sm" c="red">{parseFloat(item.discount_per_unit) > 0 ? (item.discount_type === 'percent' ? `${parseFloat(item.discount_per_unit)}%` : `฿${fmt(parseFloat(item.discount_per_unit) * parseFloat(item.quantity))}`) : '-'}</Text></Table.Td>
                 <Table.Td ta="right"><Text size="sm" fw={700} c={config.color}>฿{fmt(parseFloat(item.subtotal))}</Text></Table.Td>
               </Table.Tr>
             ))}
