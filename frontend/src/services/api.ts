@@ -2,7 +2,8 @@ import axios from 'axios'
 
 function getApiBaseUrl(): string {
   // 1. Explicit env var takes priority
-  const envUrl = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL
+  const raw = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL
+  const envUrl = raw ? raw.replace(/\/+$/, '') : ''
   if (envUrl && envUrl.startsWith('http')) {
     return envUrl.endsWith('/api') ? envUrl : `${envUrl}/api`
   }
