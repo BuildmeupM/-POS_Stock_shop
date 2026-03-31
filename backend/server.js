@@ -86,7 +86,8 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ limit: '10mb', extended: true }))
 
 // === Static Files (uploads) ===
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads')
+app.use('/uploads', express.static(UPLOAD_DIR))
 
 // === Request Logger (structured) ===
 app.use((req, res, next) => {
