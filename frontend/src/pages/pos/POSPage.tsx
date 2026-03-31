@@ -53,7 +53,8 @@ const CHANNEL_TYPE_INFO: Record<string, { icon: any; color: string }> = {
 }
 
 /** Derive the backend base URL (without /api) from the axios instance */
-const posBackendBase = '' // /uploads served via Vite proxy
+import { getBackendUrl } from '../../services/api'
+const posBackendBase = getBackendUrl()
 
 
 export default function POSPage() {

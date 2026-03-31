@@ -1,3 +1,4 @@
+import { getBackendUrl } from '../../services/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo } from 'react'
 import {
@@ -51,7 +52,7 @@ export default function ProductsTab() {
   const queryClient = useQueryClient()
 
   /** Derive the backend base URL (without /api) from the axios instance */
-  const backendBase = '' // /uploads served via Vite proxy
+  const backendBase = getBackendUrl()
 
 
   const { data: products, isLoading } = useQuery<Product[]>({

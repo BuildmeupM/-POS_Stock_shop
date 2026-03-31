@@ -10,9 +10,7 @@ import api from '../../services/api'
 import type { ProductFormData, AttributeGroup, AttributeValue } from '../../types'
 
 /** Images are served via Vite proxy (/uploads → localhost:3001/uploads) */
-function getBackendBaseUrl(): string {
-  return ''
-}
+import { getBackendUrl as getBackendBaseUrl } from '../../services/api'
 
 interface ProductFormProps {
   form: ProductFormData

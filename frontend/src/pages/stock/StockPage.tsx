@@ -15,9 +15,8 @@ import {
 import api from '../../services/api'
 
 /** Images are served via Vite proxy (/uploads → localhost:3001/uploads) */
-function getBackendBase(): string {
-  return ''
-}
+import { getBackendUrl } from '../../services/api'
+const getBackendBase = getBackendUrl
 
 const TXN_TYPES = [
   { value: 'IN', label: 'รับเข้า', color: 'green' },

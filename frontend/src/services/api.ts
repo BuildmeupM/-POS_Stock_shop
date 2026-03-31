@@ -13,6 +13,14 @@ function getApiBaseUrl(): string {
   return '/api'
 }
 
+// Backend base URL for static files (uploads/images)
+export function getBackendUrl(): string {
+  const raw = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL
+  const envUrl = raw ? raw.replace(/\/+$/, '') : ''
+  if (envUrl && envUrl.startsWith('http')) return envUrl
+  return ''
+}
+
 const api = axios.create({
   baseURL: getApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
