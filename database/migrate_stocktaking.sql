@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS stock_counts (
     id INT AUTO_INCREMENT PRIMARY KEY,
     count_number VARCHAR(50) NOT NULL,
-    company_id INT NOT NULL,
+    company_id VARCHAR(36) NOT NULL,
     warehouse_id INT NOT NULL,
     count_date DATE NOT NULL,
     status ENUM('draft', 'in_progress', 'completed', 'voided') DEFAULT 'draft',

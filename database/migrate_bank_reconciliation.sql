@@ -1,7 +1,7 @@
 -- Bank Reconciliation table
 CREATE TABLE IF NOT EXISTS bank_reconciliations (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    company_id INT NOT NULL,
+    company_id VARCHAR(36) NOT NULL,
     channel_id INT NOT NULL,
     period_from DATE NOT NULL,
     period_to DATE NOT NULL,

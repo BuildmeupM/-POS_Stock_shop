@@ -310,6 +310,18 @@ async function run() {
     ]
   })
 
+  // === 14. foreign-key lookup indexes (joins / cascade deletes) ===
+  migrations.push({
+    name: 'fk_lookup_indexes',
+    stmts: [
+      `CREATE INDEX idx_sales_customer ON sales(customer_id)`,
+      `CREATE INDEX idx_je_created_by ON journal_entries(created_by)`,
+      `CREATE INDEX idx_je_approved_by ON journal_entries(approved_by)`,
+      `CREATE INDEX idx_expenses_created_by ON expenses(created_by)`,
+      `CREATE INDEX idx_stock_txn_created_by ON stock_transactions(created_by)`,
+    ]
+  })
+
   // Run all
   let totalOk = 0, totalSkip = 0, totalErr = 0
   for (const m of migrations) {

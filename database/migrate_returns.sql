@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS sale_returns (
     id INT AUTO_INCREMENT PRIMARY KEY,
     return_number VARCHAR(50) NOT NULL,
     sale_id INT NOT NULL,
-    company_id INT NOT NULL,
+    company_id VARCHAR(36) NOT NULL,
     customer_id INT,
     return_date DATE NOT NULL,
     reason TEXT,
@@ -16,9 +16,10 @@ CREATE TABLE IF NOT EXISTS sale_returns (
     journal_entry_id INT,
     created_by INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (sale_id) REFERENCES sales(id),
+    FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
     FOREIGN KEY (company_id) REFERENCES companies(id),
-    FOREIGN KEY (created_by) REFERENCES users(id)
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS sale_return_items (
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS sale_return_items (
     subtotal DECIMAL(12,2) NOT NULL,
     restock BOOLEAN DEFAULT TRUE,
     FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES products(id)
+    FOREIGN KEY (product_id) REFERENCES products(id),
+    FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE SET NULL
 );
 
 CREATE INDEX idx_sale_returns_company ON sale_returns(company_id);

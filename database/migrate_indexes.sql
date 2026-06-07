@@ -57,3 +57,10 @@ CREATE INDEX IF NOT EXISTS idx_order_items ON online_order_items(order_id);
 
 -- === Payments ===
 CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments(sale_id);
+
+-- === Foreign-key lookup indexes (speed up joins / cascade deletes) ===
+CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+CREATE INDEX IF NOT EXISTS idx_je_created_by ON journal_entries(created_by);
+CREATE INDEX IF NOT EXISTS idx_je_approved_by ON journal_entries(approved_by);
+CREATE INDEX IF NOT EXISTS idx_expenses_created_by ON expenses(created_by);
+CREATE INDEX IF NOT EXISTS idx_stock_txn_created_by ON stock_transactions(created_by);

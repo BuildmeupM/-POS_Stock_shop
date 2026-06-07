@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS recurring_expenses (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    company_id INT NOT NULL,
+    company_id VARCHAR(36) NOT NULL,
     template_name VARCHAR(200) NOT NULL,
     contact_id INT,
     description TEXT,

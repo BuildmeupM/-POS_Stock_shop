@@ -10,6 +10,21 @@ const { writeAuditLog } = require('../../middleware/auditLog')
 
 router.use(auth, companyGuard)
 
+// Guard: ensure the product AND warehouse both belong to the caller's company.
+// stock_lots / stock_transactions are keyed only by product_id/warehouse_id, so
+// every write endpoint that accepts these from the client must verify ownership
+// to prevent cross-tenant inventory corruption via guessable ids.
+async function ownsProductWarehouse(connection, companyId, productId, warehouseId) {
+  const [rows] = await connection.execute(
+    `SELECT 1 FROM products p
+     JOIN warehouses w ON w.id = ?
+     WHERE p.id = ? AND p.company_id = ? AND w.company_id = ?
+     LIMIT 1`,
+    [warehouseId, productId, companyId, companyId]
+  )
+  return rows.length > 0
+}
+
 // GET /api/inventory/stock — current stock levels
 router.get('/stock', async (req, res) => {
   try {
@@ -67,7 +82,12 @@ router.post('/receive', roleCheck('owner', 'admin', 'manager', 'cashier'), async
     const { productId, warehouseId, quantity, costPerUnit, sellingPrice, batchNumber, expiryDate, note } = req.body
 
     if (!productId || !warehouseId || !quantity || !costPerUnit) {
+      await connection.rollback()
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบ' })
+    }
+    if (!(await ownsProductWarehouse(connection, req.user.companyId, productId, warehouseId))) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบสินค้าหรือคลังสินค้าในบริษัทนี้' })
     }
 
     // Create stock lot
@@ -126,6 +146,14 @@ router.post('/issue', roleCheck('owner', 'admin', 'manager', 'cashier'), async (
     await connection.beginTransaction()
 
     const { productId, warehouseId, quantity, note } = req.body
+    if (!productId || !warehouseId || !quantity || quantity <= 0) {
+      await connection.rollback()
+      return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบ' })
+    }
+    if (!(await ownsProductWarehouse(connection, req.user.companyId, productId, warehouseId))) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบสินค้าหรือคลังสินค้าในบริษัทนี้' })
+    }
     const { deductions, weightedAvgCost } = await deductStockFIFO(connection, productId, warehouseId, quantity)
 
     // Create transaction records
@@ -304,7 +332,12 @@ router.post('/adjust', roleCheck('owner', 'admin', 'manager'), async (req, res) 
     await connection.beginTransaction()
     const { productId, warehouseId, quantity, note } = req.body
     if (!productId || !warehouseId || quantity == null) {
+      await connection.rollback()
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบ' })
+    }
+    if (!(await ownsProductWarehouse(connection, req.user.companyId, productId, warehouseId))) {
+      await connection.rollback()
+      return res.status(404).json({ message: 'ไม่พบสินค้าหรือคลังสินค้าในบริษัทนี้' })
     }
 
     // Get current stock

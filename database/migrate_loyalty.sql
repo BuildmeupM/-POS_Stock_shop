@@ -9,7 +9,7 @@ ALTER TABLE contacts ADD COLUMN IF NOT EXISTS price_level ENUM('retail', 'wholes
 -- Loyalty transactions log
 CREATE TABLE IF NOT EXISTS loyalty_transactions (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    company_id INT NOT NULL,
+    company_id VARCHAR(36) NOT NULL,
     contact_id INT NOT NULL,
     sale_id INT,
     type ENUM('earn', 'redeem', 'adjust', 'expire') NOT NULL,
