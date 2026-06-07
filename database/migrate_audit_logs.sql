@@ -7,7 +7,7 @@ USE pos_stock_shop;
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    company_id VARCHAR(36) NOT NULL,
+    company_id VARCHAR(36) NULL,
     user_id INT,
     user_name VARCHAR(100),
     action VARCHAR(50) NOT NULL,        -- CREATE, UPDATE, DELETE, VOID, LOGIN, etc.

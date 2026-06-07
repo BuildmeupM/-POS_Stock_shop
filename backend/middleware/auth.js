@@ -9,7 +9,8 @@ const auth = (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1]
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    // Pin the algorithm to HS256 to prevent algorithm-confusion attacks
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] })
 
     req.user = {
       id: decoded.id,
@@ -18,6 +19,7 @@ const auth = (req, res, next) => {
       isSuperAdmin: !!decoded.isSuperAdmin,
       companyId: decoded.companyId,
       role: decoded.role,
+      tokenVersion: decoded.tokenVersion ?? 0,
     }
 
     next()

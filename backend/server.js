@@ -63,7 +63,10 @@ app.use(cors({
     if (!origin) return callback(null, true)
     if (process.env.NODE_ENV === 'development') {
       if (origin.includes('localhost') || origin.includes('127.0.0.1')) return callback(null, true)
-      if (/^http:\/\/\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(origin)) return callback(null, true)
+      // Only allow private/LAN IPv4 ranges in dev (not arbitrary public IPs)
+      if (/^http:\/\/(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(origin)) {
+        return callback(null, true)
+      }
     }
     if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) return callback(null, true)
     console.warn('⚠️ CORS rejected:', origin)

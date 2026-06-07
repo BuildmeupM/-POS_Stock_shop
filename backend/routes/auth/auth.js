@@ -6,6 +6,7 @@ const { executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
 const { validate } = require('../../middleware/validate')
 const { registerSchema, loginSchema } = require('../../middleware/schemas')
+const { writeAuditLog } = require('../../middleware/auditLog')
 
 // POST /api/auth/register
 router.post('/register', validate(registerSchema), async (req, res) => {
@@ -28,6 +29,12 @@ router.post('/register', validate(registerSchema), async (req, res) => {
       [username, passwordHash, fullName, nickName || null]
     )
 
+    await writeAuditLog({
+      userId: result.insertId, userName: fullName,
+      action: 'CREATE', entityType: 'user', entityId: result.insertId,
+      description: `สมัครสมาชิก ${username}`, req,
+    })
+
     res.status(201).json({ message: 'สมัครสมาชิกสำเร็จ', userId: result.insertId })
   } catch (error) {
     console.error('Register error:', error)
@@ -41,17 +48,25 @@ router.post('/login', validate(loginSchema), async (req, res) => {
     const { username, password } = req.body
 
     const users = await executeQuery(
-      'SELECT id, username, password_hash, full_name, nick_name, is_superadmin FROM users WHERE username = ? AND is_active = TRUE',
+      'SELECT id, username, password_hash, full_name, nick_name, is_superadmin, token_version FROM users WHERE username = ? AND is_active = TRUE',
       [username]
     )
 
     if (users.length === 0) {
+      await writeAuditLog({
+        userName: username, action: 'LOGIN_FAILED', entityType: 'user',
+        description: `เข้าสู่ระบบล้มเหลว (ไม่พบผู้ใช้): ${username}`, req,
+      })
       return res.status(401).json({ message: 'Username หรือ Password ไม่ถูกต้อง' })
     }
 
     const user = users[0]
     const isValid = await bcrypt.compare(password, user.password_hash)
     if (!isValid) {
+      await writeAuditLog({
+        userId: user.id, userName: user.username, action: 'LOGIN_FAILED', entityType: 'user', entityId: user.id,
+        description: `เข้าสู่ระบบล้มเหลว (รหัสผ่านผิด): ${username}`, req,
+      })
       return res.status(401).json({ message: 'Username หรือ Password ไม่ถูกต้อง' })
     }
 
@@ -77,10 +92,18 @@ router.post('/login', validate(loginSchema), async (req, res) => {
       isSuperAdmin,
       companyId: defaultCompany ? defaultCompany.company_id : null,
       role: defaultCompany ? defaultCompany.role : null,
+      tokenVersion: user.token_version ?? 0,
     }
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    })
+
+    await writeAuditLog({
+      companyId: defaultCompany ? defaultCompany.company_id : null,
+      userId: user.id, userName: user.username,
+      action: 'LOGIN', entityType: 'user', entityId: user.id,
+      description: `เข้าสู่ระบบ: ${user.username}`, req,
     })
 
     res.json({
@@ -121,8 +144,8 @@ router.post('/switch-company', auth, async (req, res) => {
 
     const company = rows[0]
 
-    // Carry isSuperAdmin forward
-    const [userData] = await executeQuery('SELECT is_superadmin FROM users WHERE id = ?', [req.user.id])
+    // Carry isSuperAdmin + token_version forward
+    const [userData] = await executeQuery('SELECT is_superadmin, token_version FROM users WHERE id = ?', [req.user.id])
     const isSuperAdmin = !!(userData?.is_superadmin)
 
     const tokenPayload = {
@@ -132,6 +155,7 @@ router.post('/switch-company', auth, async (req, res) => {
       isSuperAdmin,
       companyId,
       role: company.role,
+      tokenVersion: userData?.token_version ?? 0,
     }
 
     const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
@@ -188,6 +212,23 @@ router.get('/me', auth, async (req, res) => {
     })
   } catch (error) {
     console.error('Get me error:', error)
+    res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
+  }
+})
+
+// POST /api/auth/logout — invalidate all existing tokens for this user
+router.post('/logout', auth, async (req, res) => {
+  try {
+    await executeQuery('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id])
+    await writeAuditLog({
+      companyId: req.user.companyId || null,
+      userId: req.user.id, userName: req.user.fullName,
+      action: 'LOGOUT', entityType: 'user', entityId: req.user.id,
+      description: `ออกจากระบบ: ${req.user.username}`, req,
+    })
+    res.json({ message: 'ออกจากระบบสำเร็จ' })
+  } catch (error) {
+    console.error('Logout error:', error)
     res.status(500).json({ message: 'เกิดข้อผิดพลาด' })
   }
 })

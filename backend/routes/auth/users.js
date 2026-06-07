@@ -6,6 +6,7 @@ const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { validate } = require('../../middleware/validate')
 const { createUserSchema, updateRoleSchema } = require('../../middleware/schemas')
+const { writeAuditLog } = require('../../middleware/auditLog')
 
 // All routes require auth + company guard
 router.use(auth, companyGuard)
@@ -87,6 +88,13 @@ router.post('/', roleCheck('owner', 'admin'), validate(createUserSchema), async 
       'INSERT INTO user_companies (user_id, company_id, role, is_default) VALUES (?, ?, ?, TRUE)',
       [result.insertId, req.user.companyId, role]
     )
+
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'CREATE', entityType: 'user', entityId: result.insertId,
+      description: `เพิ่มผู้ใช้ ${username} (${role})`,
+      newValues: { username, fullName, role }, req,
+    })
 
     res.status(201).json({
       message: 'เพิ่มผู้ใช้งานสำเร็จ',
@@ -202,6 +210,13 @@ router.put('/:id/role', roleCheck('owner', 'admin'), validate(updateRoleSchema),
       [role, userId, req.user.companyId]
     )
 
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'UPDATE', entityType: 'user', entityId: userId,
+      description: `เปลี่ยนตำแหน่งผู้ใช้ #${userId}`,
+      oldValues: { role: current[0].role }, newValues: { role }, req,
+    })
+
     res.json({ message: 'อัพเดตตำแหน่งสำเร็จ' })
   } catch (error) {
     console.error('Update role error:', error)
@@ -235,7 +250,19 @@ router.put('/:id/toggle-active', roleCheck('owner', 'admin'), async (req, res) =
     if (user.length === 0) return res.status(404).json({ message: 'ไม่พบผู้ใช้งาน' })
 
     const newStatus = !user[0].is_active
-    await executeQuery('UPDATE users SET is_active = ? WHERE id = ?', [newStatus, userId])
+    // Deactivating a user must also revoke their active sessions
+    if (newStatus) {
+      await executeQuery('UPDATE users SET is_active = ? WHERE id = ?', [newStatus, userId])
+    } else {
+      await executeQuery('UPDATE users SET is_active = ?, token_version = token_version + 1 WHERE id = ?', [newStatus, userId])
+    }
+
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'UPDATE', entityType: 'user', entityId: userId,
+      description: newStatus ? `เปิดใช้งานผู้ใช้ #${userId}` : `ปิดใช้งานผู้ใช้ #${userId}`,
+      newValues: { is_active: newStatus }, req,
+    })
 
     res.json({
       message: newStatus ? 'เปิดใช้งานผู้ใช้สำเร็จ' : 'ปิดใช้งานผู้ใช้สำเร็จ',
@@ -270,7 +297,17 @@ router.put('/:id/reset-password', roleCheck('owner', 'admin'), async (req, res) 
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10)
-    await executeQuery('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId])
+    // Reset password also revokes existing sessions (token_version bump)
+    await executeQuery(
+      'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?',
+      [passwordHash, userId]
+    )
+
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'UPDATE', entityType: 'user', entityId: userId,
+      description: `รีเซ็ตรหัสผ่านผู้ใช้ #${userId}`, req,
+    })
 
     res.json({ message: 'รีเซ็ตรหัสผ่านสำเร็จ' })
   } catch (error) {
@@ -297,6 +334,12 @@ router.delete('/:id', roleCheck('owner'), async (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'ไม่พบผู้ใช้งานในบริษัทนี้' })
     }
+
+    await writeAuditLog({
+      companyId: req.user.companyId, userId: req.user.id, userName: req.user.fullName,
+      action: 'DELETE', entityType: 'user', entityId: userId,
+      description: `ลบผู้ใช้ #${userId} ออกจากบริษัท`, req,
+    })
 
     res.json({ message: 'ลบผู้ใช้ออกจากบริษัทสำเร็จ' })
   } catch (error) {

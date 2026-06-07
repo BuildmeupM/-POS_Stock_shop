@@ -294,6 +294,22 @@ async function run() {
     ]
   })
 
+  // === 12. token_version for session/token revocation (logout, password reset) ===
+  migrations.push({
+    name: 'users_token_version',
+    stmts: [
+      `ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0`,
+    ]
+  })
+
+  // === 13. allow NULL company_id in audit_logs (auth events have no company) ===
+  migrations.push({
+    name: 'audit_logs_nullable_company',
+    stmts: [
+      `ALTER TABLE audit_logs MODIFY COLUMN company_id VARCHAR(36) NULL`,
+    ]
+  })
+
   // Run all
   let totalOk = 0, totalSkip = 0, totalErr = 0
   for (const m of migrations) {

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import api from '../services/api'
 
 interface Company {
   company_id: string
@@ -41,8 +42,11 @@ export const useAuthStore = create<AuthState>()(
         set({ token, user, companies, activeCompany }),
       switchCompany: (company, newToken, companies) =>
         set((state) => ({ activeCompany: company, token: newToken, companies: companies || state.companies })),
-      logout: () =>
-        set({ token: null, user: null, companies: [], activeCompany: null }),
+      logout: () => {
+        // Best-effort server-side token revocation (token still in storage here)
+        api.post('/auth/logout').catch(() => {})
+        set({ token: null, user: null, companies: [], activeCompany: null })
+      },
       setHasHydrated: (val) => set({ _hasHydrated: val }),
     }),
     {
