@@ -3,6 +3,8 @@ const router = express.Router()
 const { executeQuery } = require('../../config/db')
 const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
+const { validate } = require('../../middleware/validate')
+const { updateCompanySchema } = require('../../middleware/schemas')
 const { v4: uuidv4 } = require('uuid')
 
 // All routes require auth + company
@@ -136,15 +138,30 @@ router.post('/', async (req, res) => {
   }
 })
 
-// PUT /api/companies/:id
-router.put('/:id', roleCheck('owner', 'admin'), async (req, res) => {
+// PUT /api/companies/:id — can only update the user's own active company
+router.put('/:id', roleCheck('owner', 'admin'), validate(updateCompanySchema), async (req, res) => {
   try {
+    // Tenant isolation: a user may only edit the company they are currently
+    // authenticated against (verified by companyGuard), never an arbitrary id.
+    if (req.params.id !== req.user.companyId) {
+      return res.status(403).json({ message: 'ไม่มีสิทธิ์แก้ไขบริษัทนี้' })
+    }
     const { name, taxId, address, phone, settings } = req.body
-    await executeQuery(
-      'UPDATE companies SET name = ?, tax_id = ?, address = ?, phone = ?, settings = ? WHERE id = ?',
-      [name, taxId || null, address || null, phone || null,
-       settings ? JSON.stringify(settings) : null, req.params.id]
-    )
+
+    // Partial update — only set fields that were actually provided
+    const sets = []
+    const params = []
+    if (name !== undefined) { sets.push('name = ?'); params.push(name) }
+    if (taxId !== undefined) { sets.push('tax_id = ?'); params.push(taxId || null) }
+    if (address !== undefined) { sets.push('address = ?'); params.push(address || null) }
+    if (phone !== undefined) { sets.push('phone = ?'); params.push(phone || null) }
+    if (settings !== undefined) { sets.push('settings = ?'); params.push(settings ? JSON.stringify(settings) : null) }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ message: 'ไม่มีข้อมูลที่ต้องอัพเดต' })
+    }
+    params.push(req.user.companyId)
+    await executeQuery(`UPDATE companies SET ${sets.join(', ')} WHERE id = ?`, params)
     res.json({ message: 'อัพเดตบริษัทสำเร็จ' })
   } catch (error) {
     console.error('Update company error:', error)

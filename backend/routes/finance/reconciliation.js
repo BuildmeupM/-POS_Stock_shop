@@ -36,24 +36,24 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' })
     }
 
-    // Calculate system balance from sales payments linked to this channel
+    // Calculate system balance from sales payments linked to this channel.
+    // Payments live in the `payments` table (per-sale) with payment_channel_id.
     const [salesBalance] = await executeQuery(`
-      SELECT COALESCE(SUM(sp.amount), 0) as total
-      FROM sale_payments sp
-      JOIN sales s ON sp.sale_id = s.id
-      WHERE s.company_id = ? AND sp.channel_id = ?
+      SELECT COALESCE(SUM(p.amount), 0) as total
+      FROM payments p
+      JOIN sales s ON p.sale_id = s.id
+      WHERE s.company_id = ? AND p.payment_channel_id = ?
         AND s.sold_at >= ? AND s.sold_at <= ?
         AND s.status = 'completed'
     `, [companyId, channelId, periodFrom, periodTo])
 
-    // Also check purchase payments going out via this channel
+    // Also check purchase payments going out via this channel.
+    // purchase_payments carries company_id + payment_channel_id + payment_date directly.
     const [purchaseBalance] = await executeQuery(`
       SELECT COALESCE(SUM(pp.amount), 0) as total
       FROM purchase_payments pp
-      JOIN purchase_invoices pi2 ON pp.invoice_id = pi2.id
-      JOIN purchase_orders po ON pi2.po_id = po.id
-      WHERE po.company_id = ? AND pp.channel_id = ?
-        AND pp.paid_at >= ? AND pp.paid_at <= ?
+      WHERE pp.company_id = ? AND pp.payment_channel_id = ?
+        AND pp.payment_date >= ? AND pp.payment_date <= ?
     `, [companyId, channelId, periodFrom, periodTo])
 
     const systemBalance = (parseFloat(salesBalance.total) || 0) - (parseFloat(purchaseBalance.total) || 0)

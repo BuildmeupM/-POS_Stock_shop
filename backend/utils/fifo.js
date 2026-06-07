@@ -6,12 +6,15 @@ const { pool } = require('../config/db')
  * Returns array of { lotId, quantity, costPerUnit } for cost tracking
  */
 const deductStockFIFO = async (connection, productId, warehouseId, quantityNeeded) => {
-  // Get lots ordered by oldest first (FIFO)
+  // Get lots ordered by oldest first (FIFO).
+  // FOR UPDATE locks the matched rows for the duration of the transaction so
+  // concurrent sales cannot read the same quantities and oversell (lost update).
   const [lots] = await connection.execute(
-    `SELECT id, quantity_remaining, cost_per_unit 
-     FROM stock_lots 
-     WHERE product_id = ? AND warehouse_id = ? AND quantity_remaining > 0 
-     ORDER BY received_at ASC`,
+    `SELECT id, quantity_remaining, cost_per_unit
+     FROM stock_lots
+     WHERE product_id = ? AND warehouse_id = ? AND quantity_remaining > 0
+     ORDER BY received_at ASC
+     FOR UPDATE`,
     [productId, warehouseId]
   )
 

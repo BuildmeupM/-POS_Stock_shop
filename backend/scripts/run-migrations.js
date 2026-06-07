@@ -42,7 +42,11 @@ async function run() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_sale_returns_company (company_id),
         INDEX idx_sale_returns_sale (sale_id),
-        INDEX idx_sale_returns_date (return_date)
+        INDEX idx_sale_returns_date (return_date),
+        CONSTRAINT fk_sr_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        CONSTRAINT fk_sr_company FOREIGN KEY (company_id) REFERENCES companies(id),
+        CONSTRAINT fk_sr_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+        CONSTRAINT fk_sr_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
       )`,
       `CREATE TABLE IF NOT EXISTS sale_return_items (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -55,8 +59,25 @@ async function run() {
         discount DECIMAL(12,2) DEFAULT 0,
         subtotal DECIMAL(12,2) NOT NULL,
         restock BOOLEAN DEFAULT TRUE,
-        FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE
+        CONSTRAINT fk_sri_return FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE,
+        CONSTRAINT fk_sri_product FOREIGN KEY (product_id) REFERENCES products(id),
+        CONSTRAINT fk_sri_sale_item FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE SET NULL
       )`,
+    ]
+  })
+
+  // === 1b. add FK constraints to already-existing sale_returns tables ===
+  // (CREATE TABLE IF NOT EXISTS above is skipped when the table already exists,
+  //  so existing deployments need explicit ALTERs to gain the constraints.)
+  migrations.push({
+    name: 'sale_returns_fks',
+    stmts: [
+      `ALTER TABLE sale_returns ADD CONSTRAINT fk_sr_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE`,
+      `ALTER TABLE sale_returns ADD CONSTRAINT fk_sr_company FOREIGN KEY (company_id) REFERENCES companies(id)`,
+      `ALTER TABLE sale_returns ADD CONSTRAINT fk_sr_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL`,
+      `ALTER TABLE sale_returns ADD CONSTRAINT fk_sr_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL`,
+      `ALTER TABLE sale_return_items ADD CONSTRAINT fk_sri_product FOREIGN KEY (product_id) REFERENCES products(id)`,
+      `ALTER TABLE sale_return_items ADD CONSTRAINT fk_sri_sale_item FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE SET NULL`,
     ]
   })
 
@@ -283,7 +304,7 @@ async function run() {
         totalOk++
         console.log(`  OK`)
       } catch (err) {
-        if (err.code === 'ER_TABLE_EXISTS_ERROR' || err.code === 'ER_DUP_FIELDNAME' || err.code === 'ER_DUP_KEYNAME') {
+        if (err.code === 'ER_TABLE_EXISTS_ERROR' || err.code === 'ER_DUP_FIELDNAME' || err.code === 'ER_DUP_KEYNAME' || err.code === 'ER_FK_DUP_NAME') {
           totalSkip++
           console.log(`  SKIP (already exists)`)
         } else {
