@@ -5,6 +5,31 @@ const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 require('dotenv').config()
 
+// === Environment validation (fail fast on misconfiguration) ===
+const validateEnv = () => {
+  const isProd = process.env.NODE_ENV === 'production'
+  const required = ['DB_HOST', 'DB_USER', 'DB_NAME', 'JWT_SECRET']
+  const missing = required.filter((key) => !process.env[key])
+  const problems = [...missing.map((k) => `missing ${k}`)]
+
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+    problems.push('JWT_SECRET must be at least 32 characters')
+  }
+  if (isProd && !process.env.DB_PASSWORD) {
+    problems.push('missing DB_PASSWORD')
+  }
+
+  if (problems.length > 0) {
+    const msg = `❌ Invalid environment configuration:\n  - ${problems.join('\n  - ')}\n  See backend/.env.example`
+    if (isProd) {
+      console.error(msg)
+      process.exit(1)
+    }
+    console.warn(`⚠️ ${msg}`)
+  }
+}
+validateEnv()
+
 const app = express()
 const PORT = process.env.PORT || 3001
 const HOST = process.env.HOST || '0.0.0.0'
