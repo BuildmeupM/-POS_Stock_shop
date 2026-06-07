@@ -5,6 +5,7 @@ const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry, voidJournalEntry } = require('../../utils/journal')
+const { vatFromInclusive } = require('../../utils/money')
 const { writeAuditLog } = require('../../middleware/auditLog')
 
 router.use(auth, companyGuard)
@@ -215,30 +216,40 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), async (req, 
     const settings = companies[0]?.settings ? JSON.parse(companies[0].settings) : {}
     const vatRate = settings.vat_enabled ? (settings.vat_rate || 7) : 0
 
-    // Calculate totals
+    // Calculate totals from the ORIGINAL sale item (never trust client prices) —
+    // only the returned quantity comes from the request (already validated above).
     let subtotal = 0
     const returnItems = []
     for (const item of items) {
-      const itemSubtotal = (item.unitPrice * item.quantity) - (item.discount || 0)
-      subtotal += itemSubtotal
-
-      // Get cost price from original sale item
       const [saleItems] = await connection.execute(
-        'SELECT cost_price FROM sale_items WHERE id = ?',
-        [item.saleItemId]
+        'SELECT unit_price, discount, quantity, cost_price FROM sale_items WHERE id = ? AND sale_id = ?',
+        [item.saleItemId, saleId]
       )
-      const costPrice = saleItems[0]?.cost_price || 0
+      if (saleItems.length === 0) {
+        await connection.rollback()
+        return res.status(400).json({ message: `ไม่พบรายการสินค้าในบิล: ${item.saleItemId}` })
+      }
+      const si = saleItems[0]
+      const origUnitPrice = parseFloat(si.unit_price) || 0
+      const origQty = si.quantity || 0
+      const origDiscount = parseFloat(si.discount) || 0
+      const returnQty = item.quantity
+      // Discount applies to the whole original line — prorate for the returned qty
+      const propDiscount = origQty > 0 ? (origDiscount * returnQty) / origQty : 0
+      const itemSubtotal = Math.round((origUnitPrice * returnQty - propDiscount) * 100) / 100
+      subtotal += itemSubtotal
 
       returnItems.push({
         ...item,
-        costPrice: parseFloat(costPrice),
+        unitPrice: origUnitPrice,
+        discount: Math.round(propDiscount * 100) / 100,
+        costPrice: parseFloat(si.cost_price) || 0,
         subtotal: itemSubtotal,
       })
     }
 
-    const vatAmount = vatRate > 0 ? (subtotal * vatRate) / (100 + vatRate) : 0
+    const roundedVat = vatFromInclusive(subtotal, vatRate)
     const netAmount = subtotal
-    const roundedVat = Math.round(vatAmount * 100) / 100
 
     // Generate return number
     const returnNumber = await generateDocNumber('RN', companyId, 'sale_returns', 'return_number')
@@ -403,11 +414,12 @@ router.put('/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res)
       for (const item of returnItems) {
         if (!item.restock || !warehouseId) continue
 
-        // Deduct from latest lot
+        // Deduct from latest lot (lock the row to serialise concurrent voids)
         const [latestLot] = await connection.execute(
           `SELECT id, quantity_remaining FROM stock_lots
            WHERE product_id = ? AND warehouse_id = ? AND quantity_remaining >= ?
-           ORDER BY received_at DESC LIMIT 1`,
+           ORDER BY received_at DESC LIMIT 1
+           FOR UPDATE`,
           [item.product_id, warehouseId, item.quantity]
         )
         if (latestLot.length > 0) {
@@ -417,10 +429,10 @@ router.put('/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res)
           )
         }
 
-        // Insert reverse stock transaction
+        // Insert reverse stock transaction ('ADJUST' is the valid enum value)
         await connection.execute(
           `INSERT INTO stock_transactions (product_id, warehouse_id, type, quantity, cost_per_unit, reference_type, reference_id, note, created_by)
-           VALUES (?, ?, 'ADJUSTMENT', ?, ?, 'VOID_RETURN', ?, ?, ?)`,
+           VALUES (?, ?, 'ADJUST', ?, ?, 'VOID_RETURN', ?, ?, ?)`,
           [item.product_id, warehouseId, -item.quantity, item.cost_price, returnId,
            'ตัดสต๊อกจากยกเลิกใบรับคืน', req.user.id]
         )
@@ -467,11 +479,12 @@ async function processApproval(connection, returnId, companyId, returnNumber, re
 
     if (!item.restock || !warehouseId) continue
 
-    // Find latest lot or create new
+    // Find latest lot or create new (lock the row to serialise concurrent restores)
     const [latestLot] = await connection.execute(
       `SELECT id FROM stock_lots
        WHERE product_id = ? AND warehouse_id = ?
-       ORDER BY received_at DESC LIMIT 1`,
+       ORDER BY received_at DESC LIMIT 1
+       FOR UPDATE`,
       [item.product_id, warehouseId]
     )
     if (latestLot.length > 0) {

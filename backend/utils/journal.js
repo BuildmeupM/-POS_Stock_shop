@@ -23,6 +23,18 @@ async function createJournalEntry(connection, opts) {
   const validLines = lines.filter(l => (l.debit || 0) > 0 || (l.credit || 0) > 0)
   if (validLines.length === 0) return null
 
+  // Enforce double-entry balance: total debits must equal total credits.
+  // Reject unbalanced entries so accounting data can never be silently corrupted.
+  const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100
+  const totalDebit = round2(validLines.reduce((s, l) => s + (l.debit || 0), 0))
+  const totalCredit = round2(validLines.reduce((s, l) => s + (l.credit || 0), 0))
+  if (Math.abs(totalDebit - totalCredit) > 0.005) {
+    throw new Error(
+      `Unbalanced journal entry (${referenceType || 'N/A'} #${referenceId ?? '-'}): ` +
+      `debit ${totalDebit.toFixed(2)} != credit ${totalCredit.toFixed(2)}`
+    )
+  }
+
   const entryNumber = await generateDocNumber('JV', companyId, 'journal_entries', 'entry_number')
 
   const [result] = await connection.execute(

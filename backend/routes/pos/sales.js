@@ -6,6 +6,7 @@ const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { deductStockFIFO } = require('../../utils/fifo')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry, voidJournalEntry } = require('../../utils/journal')
+const { vatFromInclusive } = require('../../utils/money')
 const { validate } = require('../../middleware/validate')
 const { createSaleSchema } = require('../../middleware/schemas')
 const { writeAuditLog } = require('../../middleware/auditLog')
@@ -154,7 +155,7 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), validate(cre
 
     const discount = discountAmount || 0
     const amountAfterDiscount = totalAmount - discount
-    const vatAmount = vatRate > 0 ? (amountAfterDiscount * vatRate) / (100 + vatRate) : 0
+    const vatAmount = vatFromInclusive(amountAfterDiscount, vatRate)
     const netAmount = amountAfterDiscount
 
     // Insert sale
@@ -248,32 +249,37 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'cashier'), validate(cre
     // สินค้าฝากขาย: ร้านได้เฉพาะค่าคอมฯ ส่วนที่เหลือเป็นเจ้าหนี้ผู้ฝากขาย
     const consignmentItems = saleItems.filter(i => i.isConsignment)
     if (consignmentItems.length > 0) {
-      let totalConsignorPayable = 0
-      let totalCommission = 0
-      for (const ci of consignmentItems) {
-        const consignorCost = ci.costPrice * ci.quantity
-        const commission = ci.subtotal - consignorCost
-        totalConsignorPayable += consignorCost
-        totalCommission += commission
+      // Move the consignment portion of revenue (booked above in 4100) into:
+      //   - 2150 เจ้าหนี้ผู้ฝากขาย (amount owed to the consignor)
+      //   - 4200 ค่าคอมมิชชัน (the shop's margin)
+      // consignmentSalesTotal === consignorPayable + commission, so this always balances.
+      const consignmentSalesTotal = consignmentItems.reduce((s, i) => s + i.subtotal, 0)
+      const totalConsignorPayable = consignmentItems.reduce((s, i) => s + i.costPrice * i.quantity, 0)
+      const totalCommission = consignmentSalesTotal - totalConsignorPayable
+
+      if (consignmentSalesTotal > 0) {
+        // Reverse the consignment revenue previously credited to 4100
+        journalLines.push({
+          accountCode: '4100', debit: consignmentSalesTotal, credit: 0,
+          description: `ปรับรายได้ส่วนฝากขาย ${invoiceNumber}`,
+        })
       }
-      // Credit: เจ้าหนี้ผู้ฝากขาย (2150)
       if (totalConsignorPayable > 0) {
         journalLines.push({
           accountCode: '2150', debit: 0, credit: totalConsignorPayable,
           description: `เจ้าหนี้ฝากขาย ${invoiceNumber}`,
         })
       }
-      // Credit: รายได้ค่าคอมมิชชัน (4200) — แทนที่ Revenue ปกติสำหรับส่วนฝากขาย
       if (totalCommission > 0) {
         journalLines.push({
           accountCode: '4200', debit: 0, credit: totalCommission,
           description: `ค่าคอมมิชชันฝากขาย ${invoiceNumber}`,
         })
-        // ลดยอด Revenue (4100) ที่บันทึกไว้ข้างต้น เฉพาะส่วนฝากขาย
-        const consignmentSalesTotal = consignmentItems.reduce((s, i) => s + i.subtotal, 0)
+      } else if (totalCommission < 0) {
+        // Sold below consignor cost — record the shortfall as a debit to commission
         journalLines.push({
-          accountCode: '4100', debit: consignmentSalesTotal, credit: 0,
-          description: `ปรับรายได้ส่วนฝากขาย ${invoiceNumber}`,
+          accountCode: '4200', debit: -totalCommission, credit: 0,
+          description: `ขาดทุนส่วนฝากขาย ${invoiceNumber}`,
         })
       }
     }
@@ -615,53 +621,11 @@ router.put('/:id/void', roleCheck('owner', 'admin', 'manager'), async (req, res)
       )
     }
 
-    // Create reverse journal
-    const netAmount = parseFloat(sale.net_amount) || 0
-    const vatAmount = parseFloat(sale.vat_amount) || 0
-    const revenueAmount = netAmount - vatAmount
-
-    // Get COGS from sale items
-    const [costRows] = await connection.execute(
-      'SELECT SUM(quantity * cost_price) as total_cost FROM sale_items WHERE sale_id = ? AND product_id IS NOT NULL AND (is_consignment = FALSE OR is_consignment IS NULL)',
-      [saleId]
-    )
-    const totalCost = parseFloat(costRows[0]?.total_cost) || 0
-
-    const reverseLines = []
-    // Reverse: Credit Cash, Debit Revenue
-    if (netAmount > 0) {
-      reverseLines.push({ accountCode: '1100', debit: 0, credit: netAmount, description: `กลับรายการขาย ${sale.invoice_number}` })
-    }
-    if (revenueAmount > 0) {
-      reverseLines.push({ accountCode: '4100', debit: revenueAmount, credit: 0, description: `กลับรายได้ ${sale.invoice_number}` })
-    }
-    if (vatAmount > 0) {
-      reverseLines.push({ accountCode: '2120', debit: vatAmount, credit: 0, description: `กลับภาษีขาย ${sale.invoice_number}` })
-    }
-    // Reverse COGS (regular items only)
-    if (totalCost > 0) {
-      reverseLines.push({ accountCode: '5100', debit: 0, credit: totalCost, description: `กลับต้นทุนขาย ${sale.invoice_number}` })
-      reverseLines.push({ accountCode: '1200', debit: totalCost, credit: 0, description: `คืนสต๊อก ${sale.invoice_number}` })
-    }
-
-    // Reverse consignment entries
-    const consignmentItems = itemsToRestore.filter(i => i.is_consignment)
-    if (consignmentItems.length > 0) {
-      let totalConsignorPayable = 0
-      for (const ci of consignmentItems) {
-        totalConsignorPayable += parseFloat(ci.cost_price) * ci.quantity
-      }
-      if (totalConsignorPayable > 0) {
-        reverseLines.push({ accountCode: '2150', debit: totalConsignorPayable, credit: 0, description: `กลับเจ้าหนี้ฝากขาย ${sale.invoice_number}` })
-      }
-    }
-
-    await createJournalEntry(connection, {
-      companyId, entryDate: new Date().toISOString().slice(0, 10),
-      description: `ยกเลิกบิล ${sale.invoice_number}`,
-      referenceType: 'VOID_SALE', referenceId: saleId,
-      createdBy: req.user.id, lines: reverseLines,
-    })
+    // NOTE: We do NOT post a separate reversal journal. The original SALE entry
+    // is already marked status='voided' above, and all journal-based reports
+    // (trial balance, P&L, balance sheet) aggregate only status='posted' rows —
+    // so voiding the original fully and correctly reverses it. Posting an extra
+    // reverse entry here would double-count the reversal.
 
     await writeAuditLog({
       companyId, userId: req.user.id, userName: req.user.fullName,
