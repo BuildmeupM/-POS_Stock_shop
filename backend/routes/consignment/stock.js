@@ -5,6 +5,8 @@ const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { createJournalEntry } = require('../../utils/journal')
+const { validate } = require('../../middleware/validate')
+const { consignmentReceiveSchema } = require('../../middleware/schemas')
 
 router.use(auth, companyGuard)
 
@@ -57,15 +59,11 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/consignment/stock/receive — รับสินค้าฝากขายเข้า
-router.post('/receive', roleCheck('owner', 'admin', 'manager'), async (req, res) => {
+router.post('/receive', roleCheck('owner', 'admin', 'manager'), validate(consignmentReceiveSchema), async (req, res) => {
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
     const { agreementId, items } = req.body
-
-    if (!agreementId || !items || items.length === 0) {
-      return res.status(400).json({ message: 'กรุณาระบุสัญญาและรายการสินค้า' })
-    }
 
     // Verify agreement
     const [agreements] = await connection.execute(

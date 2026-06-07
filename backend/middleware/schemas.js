@@ -139,6 +139,41 @@ const createPOSchema = z.object({
   })).min(1, 'ต้องมีอย่างน้อย 1 รายการ'),
 })
 
+// ── Payment channels (wallet) ──
+const walletChannelSchema = z.object({
+  name: z.string().min(1, 'กรุณาระบุชื่อช่องทาง').max(100),
+  type: z.string().min(1, 'กรุณาระบุประเภทช่องทาง').max(50),
+  accountName: z.string().max(200).optional().nullable(),
+  accountNumber: z.string().max(100).optional().nullable(),
+  bankName: z.string().max(100).optional().nullable(),
+  qrCodeUrl: z.string().max(500).optional().nullable(),
+  icon: z.string().max(100).optional().nullable(),
+  isDefault: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  note: z.string().max(1000).optional().nullable(),
+})
+
+// ── Chart of accounts ──
+const createAccountSchema = z.object({
+  accountCode: z.string().min(1, 'กรุณาระบุรหัสบัญชี').max(20),
+  name: z.string().min(1, 'กรุณาระบุชื่อบัญชี').max(200),
+  accountType: z.enum(['asset', 'liability', 'equity', 'revenue', 'expense']),
+  parentId: z.number().optional().nullable(),
+  description: z.string().optional().nullable(),
+})
+
+// ── Consignment: receive stock ──
+const consignmentReceiveSchema = z.object({
+  agreementId: z.number({ required_error: 'กรุณาเลือกสัญญาฝากขาย' }),
+  items: z.array(z.object({
+    productId: z.number(),
+    quantity: z.number().min(1),
+    consignorPrice: z.number().min(0).optional().nullable(),
+    sellingPrice: z.number().min(0).optional().nullable(),
+    note: z.string().optional().nullable(),
+  })).min(1, 'ต้องมีอย่างน้อย 1 รายการ'),
+})
+
 module.exports = {
   loginSchema, registerSchema,
   createUserSchema, updateRoleSchema,
@@ -148,4 +183,7 @@ module.exports = {
   createContactSchema,
   createExpenseSchema,
   createPOSchema,
+  walletChannelSchema,
+  createAccountSchema,
+  consignmentReceiveSchema,
 }

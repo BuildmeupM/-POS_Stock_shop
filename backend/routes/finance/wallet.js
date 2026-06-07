@@ -5,6 +5,8 @@ const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { writeAuditLog } = require('../../middleware/auditLog')
+const { validate } = require('../../middleware/validate')
+const { walletChannelSchema } = require('../../middleware/schemas')
 
 router.use(auth, companyGuard)
 
@@ -59,10 +61,9 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/wallet — create
-router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
+router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), validate(walletChannelSchema), async (req, res) => {
   try {
     const { name, type, accountName, accountNumber, bankName, qrCodeUrl, icon, isDefault, note } = req.body
-    if (!name || !type) return res.status(400).json({ message: 'กรุณาระบุชื่อและประเภทช่องทาง' })
 
     const companyId = req.user.companyId
 
@@ -87,7 +88,7 @@ router.post('/', roleCheck('owner', 'admin', 'manager', 'accountant'), async (re
 })
 
 // PUT /api/wallet/:id — update
-router.put('/:id', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
+router.put('/:id', roleCheck('owner', 'admin', 'manager', 'accountant'), validate(walletChannelSchema), async (req, res) => {
   try {
     const { name, type, accountName, accountNumber, bankName, qrCodeUrl, icon, isDefault, isActive, note } = req.body
     const companyId = req.user.companyId

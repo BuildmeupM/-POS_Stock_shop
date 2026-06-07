@@ -5,6 +5,8 @@ const auth = require('../../middleware/auth')
 const { companyGuard, roleCheck } = require('../../middleware/companyGuard')
 const { generateDocNumber } = require('../../utils/docNumber')
 const { writeAuditLog } = require('../../middleware/auditLog')
+const { validate } = require('../../middleware/validate')
+const { createAccountSchema } = require('../../middleware/schemas')
 
 router.use(auth, companyGuard)
 
@@ -50,7 +52,7 @@ router.get('/accounts', async (req, res) => {
 })
 
 // POST /api/accounting/accounts
-router.post('/accounts', roleCheck('owner', 'admin', 'manager', 'accountant'), async (req, res) => {
+router.post('/accounts', roleCheck('owner', 'admin', 'manager', 'accountant'), validate(createAccountSchema), async (req, res) => {
   try {
     const { accountCode, name, accountType, parentId, description } = req.body
     const result = await executeQuery(
